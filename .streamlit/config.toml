@@ -1,6 +1,5 @@
-[server]
-port = 8501
-headless = false
+# 클라우드에서는 포트를 서버가 배정하므로 [server] 설정을 두지 않는다.
+# 내 PC 에서 쓰는 포트는 launch_web.py 가 실행할 때 직접 넘긴다.
 
 [browser]
 gatherUsageStats = false

@@ -709,35 +709,49 @@ if True:
 
     st.divider()
 
-    st.subheader("샘플비용  ·  {}년 누적".format(year[2:]))
-    st.caption("달별로 금액을 넣어두면 계속 쌓입니다. "
-               "**기준월({})** 의 금액이 이번 계산에 차감됩니다.".format(period))
+    st.subheader("샘플비용  ·  {}".format(period))
+    st.caption("월을 눌러 옮겨 다니며 입력하세요. **기준월({})** 의 금액이 이번 계산에 차감됩니다. "
+               "지난 달 값은 그대로 쌓입니다.".format(period))
 
-    hs = st.columns([1, 2, 3])
-    hs[0].markdown("**월**")
-    hs[1].markdown("**자체샘플+이벤트지원**")
-
-    smp_year, cum = {}, 0.0
+    # 월 이동 버튼 (카드수수료와 동일 — 기준월이 함께 바뀝니다)
+    srow = st.columns(12)
     for mth in range(1, 13):
-        key_month = "{}-{:02d}".format(year, mth)
-        c = st.columns([1, 2, 3])
-        is_now = key_month == period
-        c[0].markdown("<div style='padding-top:.55rem'>{}{}월</div>".format(
-            "▶ " if is_now else "", mth), unsafe_allow_html=True)
-        v = c[1].number_input("샘플 %d월" % mth, min_value=0.0,
-                              value=float(def_samples_by_month.get(key_month, 0.0)),
-                              step=1000.0, format="%.0f", key="smp_%s" % key_month,
-                              label_visibility="collapsed")
-        if is_now:
-            c[2].markdown("<div style='padding-top:.55rem;color:#1f6feb'>← 이번 계산에 차감</div>",
-                          unsafe_allow_html=True)
-        smp_year[key_month] = v
-        cum += v
+        key_m = "{}-{:02d}".format(year, mth)
+        filled = float(def_samples_by_month.get(key_m, 0.0)) > 0
+        if srow[mth - 1].button("{}월{}".format(mth, " ●" if filled else ""),
+                                key="smtab_%s" % key_m,
+                                type="primary" if key_m == period else "secondary",
+                                width="stretch"):
+            st.session_state["period_override"] = key_m
+            st.rerun()
+    st.caption("● 표시는 금액이 입력된 달입니다.")
+    st.write("")
 
-    ts = st.columns([1, 2, 3])
-    ts[0].markdown("**누적**")
-    ts[1].markdown("<div style='text-align:right'><b>{}</b></div>".format(WON.format(cum)),
+    # 선택한 달만 입력
+    smp_year = {"{}-{:02d}".format(year, m): float(def_samples_by_month.get(
+        "{}-{:02d}".format(year, m), 0.0)) for m in range(1, 13)}
+    sc = st.columns([2, 2, 3])
+    sc[0].markdown("<div style='padding-top:.55rem'><b>자체샘플+이벤트지원</b></div>",
                    unsafe_allow_html=True)
+    v_now = sc[1].number_input("샘플비용 " + period, min_value=0.0,
+                               value=float(def_samples_by_month.get(period, 0.0)),
+                               step=1000.0, format="%.0f", key="smp_%s" % period,
+                               label_visibility="collapsed")
+    smp_year[period] = v_now
+    cum = sum(smp_year.values())
+    sc[2].markdown("<div style='padding-top:.55rem;color:#64748B'>"
+                   "{}년 누적 <b style='color:#0F172A'>{}</b> 원</div>".format(
+                       year[2:], WON.format(cum)), unsafe_allow_html=True)
+
+    with st.expander("{}년 12개월 한눈에 보기".format(year[2:])):
+        st.dataframe(
+            pd.DataFrame([{"월": "{}월".format(m),
+                           "자체샘플+이벤트지원": smp_year["{}-{:02d}".format(year, m)],
+                           "": "◀ 이번 계산" if "{}-{:02d}".format(year, m) == period else ""}
+                          for m in range(1, 13)]),
+            width="stretch", hide_index=True,
+            column_config={"자체샘플+이벤트지원": st.column_config.NumberColumn(format="%d")})
+        st.caption("누적 {} 원".format(WON.format(cum)))
 
     sample = smp_year.get(period, 0.0)
     sample_items = [("자체샘플+이벤트지원", sample)]

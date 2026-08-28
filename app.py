@@ -546,290 +546,349 @@ auth.logout_button()
 
 
 # ---------------------------------------------------------------- 본문
-st.title("이익률 계산")
-st.caption("이카운트 매출 파일을 올리면 채널별 이익률을 계산합니다. "
-           "배송비는 매출=원가로 처리하여 이익에서 제외됩니다.")
+VIEW = st.session_state.setdefault("view", "input")
 
-# ---- 채널 설정 (업로더보다 먼저 정의해야 하므로 위에 두되, 접어 둔다)
-with st.expander("⚙️ 채널 설정  —  채널을 추가하거나 비용 차감 대상을 바꿀 때만"):
-    st.markdown("채널을 추가하거나 비용 차감 대상을 바꿀 때만 수정하세요. "
-                "**카드수수료·샘플비용은 총액이므로 한 채널에만 체크**하는 것이 맞습니다.")
-    ch_df = st.data_editor(
-        pd.DataFrame([{
-            "채널명": c["name"], "파일명": c["file"],
-            "셀러수수료": c["seller"], "카드수수료": c["card"], "샘플비용": c["sample"],
-            "셀러수수료 기본율": c.get("fee_base", 0.0),
-        } for c in def_channels]),
-        num_rows="dynamic", width="stretch", key="ch_editor",
-        column_config={
-            "채널명": st.column_config.TextColumn(required=True),
-            "파일명": st.column_config.TextColumn(help="배치 실행 시 입력/ 폴더에서 찾을 이름"),
-            "셀러수수료": st.column_config.CheckboxColumn(help="상품별 셀러수수료를 차감"),
-            "카드수수료": st.column_config.CheckboxColumn(help="카드수수료 총액을 차감"),
-            "샘플비용": st.column_config.CheckboxColumn(help="샘플비용 총액을 차감"),
-            "셀러수수료 기본율": st.column_config.NumberColumn(
-                format="percent", min_value=0.0, max_value=1.0, step=0.01,
-                help="기준 파일에 요율이 없을 때 적용 (0.15 = 15%)"),
-        })
-    channels = [{
-        "name": str(r["채널명"]).strip(), "file": str(r["파일명"] or "").strip(),
-        "seller": bool(r["셀러수수료"]), "card": bool(r["카드수수료"]),
-        "sample": bool(r["샘플비용"]), "fee_base": float(r["셀러수수료 기본율"] or 0.0),
-    } for _, r in ch_df.iterrows() if str(r["채널명"]).strip()]
+if VIEW == "result" and not st.session_state.get("out"):
+    VIEW = st.session_state["view"] = "input"      # 결과가 없으면 입력 화면
 
-# ---- ① 매출 파일
-st.subheader("① 이카운트 매출 파일")
-st.caption("채널별로 다운로드한 파일을 올려주세요. 필요한 열: "
-           "`품목명[규격]코드` · `수량` · `판매액`  "
-           "(`품목그룹3코드` 가 있으면 배송비를 자동 분리합니다)")
-uploads = {}
-cols = st.columns(min(len(channels), 4) or 1)
-for i, ch in enumerate(channels):
-    with cols[i % len(cols)]:
-        uploads[ch["name"]] = st.file_uploader(
-            ch["name"], type=["xlsx", "xlsm", "csv"], key="up_" + ch["name"])
+if VIEW == "result":
+    _o = st.session_state["out"]
+    _c1, _c2 = st.columns([3, 1])
+    _c1.title("{} 이익률 결과".format(_o["period"]))
+    _c2.write("")
+    if _c2.button("← 입력 화면으로", width="stretch"):
+        st.session_state["view"] = "input"
+        st.rerun()
+else:
+    st.title("이익률 계산")
+if VIEW == "input":
+    st.caption("이카운트 매출 파일을 올리면 채널별 이익률을 계산합니다. "
+               "배송비는 매출=원가로 처리하여 이익에서 제외됩니다.")
 
-st.divider()
+    # ---- 채널 설정 (업로더보다 먼저 정의해야 하므로 위에 두되, 접어 둔다)
+    with st.expander("⚙️ 채널 설정  —  채널을 추가하거나 비용 차감 대상을 바꿀 때만"):
+        st.markdown("채널을 추가하거나 비용 차감 대상을 바꿀 때만 수정하세요. "
+                    "**카드수수료·샘플비용은 총액이므로 한 채널에만 체크**하는 것이 맞습니다.")
+        ch_df = st.data_editor(
+            pd.DataFrame([{
+                "채널명": c["name"], "파일명": c["file"],
+                "셀러수수료": c["seller"], "카드수수료": c["card"], "샘플비용": c["sample"],
+                "셀러수수료 기본율": c.get("fee_base", 0.0),
+            } for c in def_channels]),
+            num_rows="dynamic", width="stretch", key="ch_editor",
+            column_config={
+                "채널명": st.column_config.TextColumn(required=True),
+                "파일명": st.column_config.TextColumn(help="배치 실행 시 입력/ 폴더에서 찾을 이름"),
+                "셀러수수료": st.column_config.CheckboxColumn(help="상품별 셀러수수료를 차감"),
+                "카드수수료": st.column_config.CheckboxColumn(help="카드수수료 총액을 차감"),
+                "샘플비용": st.column_config.CheckboxColumn(help="샘플비용 총액을 차감"),
+                "셀러수수료 기본율": st.column_config.NumberColumn(
+                    format="percent", min_value=0.0, max_value=1.0, step=0.01,
+                    help="기준 파일에 요율이 없을 때 적용 (0.15 = 15%)"),
+            })
+        channels = [{
+            "name": str(r["채널명"]).strip(), "file": str(r["파일명"] or "").strip(),
+            "seller": bool(r["셀러수수료"]), "card": bool(r["카드수수료"]),
+            "sample": bool(r["샘플비용"]), "fee_base": float(r["셀러수수료 기본율"] or 0.0),
+        } for _, r in ch_df.iterrows() if str(r["채널명"]).strip()]
 
-# ---- ② 비용 입력 (같은 페이지)
-st.subheader("② 비용 입력")
-if True:
-    year = period[:4] if len(period) >= 4 and period[:4].isdigit() else str(datetime.now().year)
+    # ---- ① 매출 파일
+    st.subheader("① 이카운트 매출 파일")
+    st.caption("채널별로 다운로드한 파일을 올려주세요. 필요한 열: "
+               "`품목명[규격]코드` · `수량` · `판매액`  "
+               "(`품목그룹3코드` 가 있으면 배송비를 자동 분리합니다)")
+    uploads = {}
+    cols = st.columns(min(len(channels), 4) or 1)
+    for i, ch in enumerate(channels):
+        with cols[i % len(cols)]:
+            uploads[ch["name"]] = st.file_uploader(
+                ch["name"], type=["xlsx", "xlsm", "csv"], key="up_" + ch["name"])
 
-    st.subheader("카드수수료  ·  {}".format(period))
-    st.caption("월을 눌러 옮겨 다니며 입력하세요. 선택한 달이 **기준월**이 되어 계산에 쓰입니다. "
-               "결제수단별 **정상금액**만 채우면 수수료가 자동 계산됩니다.")
+    st.divider()
 
-    # ---- 스룩페이 매출통계 파일로 자동 입력
-    srk = st.file_uploader(
-        "스룩페이 매출통계 파일 올리기  (매출/정산 → 엑셀 내려받기)",
-        type=["xlsx", "xlsm"], key="up_srook_%s" % period,
-        help="결제수단별 [정상금액]을 읽어 아래 칸을 자동으로 채웁니다. "
-             "수수료는 아래 요율로 계산합니다.")
-    if srk is not None:
-        sig = "{}:{}:{}".format(period, srk.name, srk.size)
-        try:
-            sk = E.read_srookpay(io.BytesIO(srk.getvalue()))
-            st.session_state["srook_" + period] = sk
-            if st.session_state.get("srook_applied") != sig:
-                # 위치가 아니라 **결제수단 이름**으로 맞춘다 (순서가 다를 수 있음)
-                slot = {E.norm(m): i for i, (m, _a, _r) in enumerate(def_cards)}
-                unmatched = []
-                for m, a, _f, _r in sk["rows"]:
-                    i = slot.get(E.norm(m))
-                    if i is None:
-                        unmatched.append(m)
-                        continue
-                    st.session_state["card_amt_%s_%d" % (period, i)] = float(a)
-                # 파일에는 없는 결제수단은 0 으로 (지난달 값이 남지 않도록)
-                in_file = {E.norm(m) for m, _a, _f, _r in sk["rows"]}
-                for i, (m, _a, _r) in enumerate(def_cards):
-                    if E.norm(m) not in in_file:
-                        st.session_state["card_amt_%s_%d" % (period, i)] = 0.0
-                st.session_state["srook_unmatched"] = unmatched
-                st.session_state["srook_applied"] = sig
+    # ---- ② 비용 입력 (같은 페이지)
+    st.subheader("② 비용 입력")
+    if True:
+        year = period[:4] if len(period) >= 4 and period[:4].isdigit() else str(datetime.now().year)
+
+        st.subheader("카드수수료  ·  {}".format(period))
+        st.caption("월을 눌러 옮겨 다니며 입력하세요. 선택한 달이 **기준월**이 되어 계산에 쓰입니다. "
+                   "결제수단별 **정상금액**만 채우면 수수료가 자동 계산됩니다.")
+
+        # ---- 스룩페이 매출통계 파일로 자동 입력
+        srk = st.file_uploader(
+            "스룩페이 매출통계 파일 올리기  (매출/정산 → 엑셀 내려받기)",
+            type=["xlsx", "xlsm"], key="up_srook_%s" % period,
+            help="결제수단별 [정상금액]을 읽어 아래 칸을 자동으로 채웁니다. "
+                 "수수료는 아래 요율로 계산합니다.")
+        if srk is not None:
+            sig = "{}:{}:{}".format(period, srk.name, srk.size)
+            try:
+                sk = E.read_srookpay(io.BytesIO(srk.getvalue()))
+                st.session_state["srook_" + period] = sk
+                if st.session_state.get("srook_applied") != sig:
+                    # 위치가 아니라 **결제수단 이름**으로 맞춘다 (순서가 다를 수 있음)
+                    slot = {E.norm(m): i for i, (m, _a, _r) in enumerate(def_cards)}
+                    unmatched = []
+                    for m, a, _f, _r in sk["rows"]:
+                        i = slot.get(E.norm(m))
+                        if i is None:
+                            unmatched.append(m)
+                            continue
+                        st.session_state["card_amt_%s_%d" % (period, i)] = float(a)
+                    # 파일에는 없는 결제수단은 0 으로 (지난달 값이 남지 않도록)
+                    in_file = {E.norm(m) for m, _a, _f, _r in sk["rows"]}
+                    for i, (m, _a, _r) in enumerate(def_cards):
+                        if E.norm(m) not in in_file:
+                            st.session_state["card_amt_%s_%d" % (period, i)] = 0.0
+                    st.session_state["srook_unmatched"] = unmatched
+                    st.session_state["srook_applied"] = sig
+                    st.rerun()
+            except Exception as e:
+                st.error("스룩페이 파일을 읽지 못했습니다 — {}".format(e))
+
+        sk = st.session_state.get("srook_" + period)
+        if sk:
+            pf, pt = sk["period_from"], sk["period_to"]
+            want = period                                   # 예: 2026-08
+            ok_month = (not pf) or (pf[:7] == want and pt[:7] == want)
+            msg = "스룩페이 자료 **{} ~ {}** · 정상금액 합계 {} 원".format(
+                pf or "?", pt or "?", WON.format(sk["total_amount"]))
+            (st.success if ok_month else st.warning)(msg)
+            if not ok_month:
+                st.warning("이 파일의 기간이 기준월({})과 다릅니다. 월을 확인하세요.".format(period))
+            _um = st.session_state.get("srook_unmatched") or []
+            if _um:
+                st.warning("아래 목록에 없는 결제수단이라 채우지 못했습니다: **{}**  "
+                           "→ [결제수단 추가·삭제] 에서 같은 이름으로 추가하세요.".format(", ".join(_um)))
+
+        # 월 이동 버튼 — 누르면 그 달로 기준월이 바뀐다
+        mrow = st.columns(12)
+        for m in range(1, 13):
+            key_m = "{}-{:02d}".format(year, m)
+            filled = any(a for _n, a, _r in def_cards_all.get(key_m, []))
+            label = "{}월{}".format(m, " ●" if filled else "")
+            if mrow[m - 1].button(label, key="mtab_%s" % key_m,
+                                  type="primary" if key_m == period else "secondary",
+                                  width="stretch"):
+                st.session_state["period_override"] = key_m
                 st.rerun()
-        except Exception as e:
-            st.error("스룩페이 파일을 읽지 못했습니다 — {}".format(e))
+        st.caption("● 표시는 금액이 입력된 달입니다.")
+        st.write("")
 
-    sk = st.session_state.get("srook_" + period)
-    if sk:
-        pf, pt = sk["period_from"], sk["period_to"]
-        want = period                                   # 예: 2026-08
-        ok_month = (not pf) or (pf[:7] == want and pt[:7] == want)
-        msg = "스룩페이 자료 **{} ~ {}** · 정상금액 합계 {} 원".format(
-            pf or "?", pt or "?", WON.format(sk["total_amount"]))
-        (st.success if ok_month else st.warning)(msg)
-        if not ok_month:
-            st.warning("이 파일의 기간이 기준월({})과 다릅니다. 월을 확인하세요.".format(period))
-        _um = st.session_state.get("srook_unmatched") or []
-        if _um:
-            st.warning("아래 목록에 없는 결제수단이라 채우지 못했습니다: **{}**  "
-                       "→ [결제수단 추가·삭제] 에서 같은 이름으로 추가하세요.".format(", ".join(_um)))
+        CARD_W = [2, 2, 1.1, 0.35, 2]        # 결제수단 / 정상금액 / 수수료율 / % / 수수료
+        h = st.columns(CARD_W)
+        for c, t in zip(h, ["결제수단", "정상금액", "수수료율", "", "수수료"]):
+            c.markdown("**{}**".format(t) if t else "")
 
-    # 월 이동 버튼 — 누르면 그 달로 기준월이 바뀐다
-    mrow = st.columns(12)
-    for m in range(1, 13):
-        key_m = "{}-{:02d}".format(year, m)
-        filled = any(a for _n, a, _r in def_cards_all.get(key_m, []))
-        label = "{}월{}".format(m, " ●" if filled else "")
-        if mrow[m - 1].button(label, key="mtab_%s" % key_m,
-                              type="primary" if key_m == period else "secondary",
-                              width="stretch"):
-            st.session_state["period_override"] = key_m
-            st.rerun()
-    st.caption("● 표시는 금액이 입력된 달입니다.")
-    st.write("")
+        cards_in, amt_sum, fee_sum = [], 0.0, 0.0
+        for i, (m, a, r) in enumerate(def_cards):
+            c = st.columns(CARD_W)
+            c[0].markdown("<div style='padding-top:.55rem'>{}</div>".format(m), unsafe_allow_html=True)
+            amt = c[1].number_input("정상금액 " + m, min_value=0.0, value=float(a), step=1000.0,
+                                    format="%.0f", key="card_amt_%s_%d" % (period, i),
+                                    label_visibility="collapsed")
+            # 수수료율은 퍼센트로 입력받는다 (2.75 → 0.0275)
+            pct = c[2].number_input("수수료율 " + m, min_value=0.0, max_value=100.0,
+                                    value=round(float(r) * 100, 4), step=0.05, format="%.2f",
+                                    key="card_rt_%s_%d" % (period, i), label_visibility="collapsed")
+            c[3].markdown("<div style='padding-top:.55rem;color:#64748B'>%</div>",
+                          unsafe_allow_html=True)
+            rt = pct / 100.0
+            f = amt * rt
+            c[4].markdown("<div style='padding-top:.55rem;text-align:right'>{}</div>".format(
+                WON.format(f) if f else "-"), unsafe_allow_html=True)
+            cards_in.append((m, amt, rt))
+            amt_sum += amt
+            fee_sum += f
 
-    CARD_W = [2, 2, 1.1, 0.35, 2]        # 결제수단 / 정상금액 / 수수료율 / % / 수수료
-    h = st.columns(CARD_W)
-    for c, t in zip(h, ["결제수단", "정상금액", "수수료율", "", "수수료"]):
-        c.markdown("**{}**".format(t) if t else "")
-
-    cards_in, amt_sum, fee_sum = [], 0.0, 0.0
-    for i, (m, a, r) in enumerate(def_cards):
-        c = st.columns(CARD_W)
-        c[0].markdown("<div style='padding-top:.55rem'>{}</div>".format(m), unsafe_allow_html=True)
-        amt = c[1].number_input("정상금액 " + m, min_value=0.0, value=float(a), step=1000.0,
-                                format="%.0f", key="card_amt_%s_%d" % (period, i),
-                                label_visibility="collapsed")
-        # 수수료율은 퍼센트로 입력받는다 (2.75 → 0.0275)
-        pct = c[2].number_input("수수료율 " + m, min_value=0.0, max_value=100.0,
-                                value=round(float(r) * 100, 4), step=0.05, format="%.2f",
-                                key="card_rt_%s_%d" % (period, i), label_visibility="collapsed")
-        c[3].markdown("<div style='padding-top:.55rem;color:#64748B'>%</div>",
+        t = st.columns(CARD_W)
+        t[0].markdown("**합계**")
+        t[1].markdown("<div style='text-align:right'><b>{}</b></div>".format(WON.format(amt_sum)),
                       unsafe_allow_html=True)
-        rt = pct / 100.0
-        f = amt * rt
-        c[4].markdown("<div style='padding-top:.55rem;text-align:right'>{}</div>".format(
-            WON.format(f) if f else "-"), unsafe_allow_html=True)
-        cards_in.append((m, amt, rt))
-        amt_sum += amt
-        fee_sum += f
-
-    t = st.columns(CARD_W)
-    t[0].markdown("**합계**")
-    t[1].markdown("<div style='text-align:right'><b>{}</b></div>".format(WON.format(amt_sum)),
-                  unsafe_allow_html=True)
-    t[4].markdown("<div style='text-align:right'><b>{}</b></div>".format(WON.format(fee_sum)),
-                  unsafe_allow_html=True)
-    cards, card_total = E.card_rows_total(cards_in)
+        t[4].markdown("<div style='text-align:right'><b>{}</b></div>".format(WON.format(fee_sum)),
+                      unsafe_allow_html=True)
+        cards, card_total = E.card_rows_total(cards_in)
 
 
-    with st.expander("결제수단 추가·삭제"):
-        new_m = st.text_input("추가할 결제수단 이름", key="card_new")
-        cc = st.columns(2)
-        if cc[0].button("추가", key="card_add") and new_m.strip():
-            st.session_state["extra_cards"] = st.session_state.get("extra_cards", []) + [new_m.strip()]
-            st.rerun()
-        if cc[1].button("추가한 결제수단 모두 지우기", key="card_clr"):
-            st.session_state["extra_cards"] = []
-            st.rerun()
-        st.caption("추가한 결제수단은 저장하면 설정.xlsx 에 남습니다.")
+        with st.expander("결제수단 추가·삭제"):
+            new_m = st.text_input("추가할 결제수단 이름", key="card_new")
+            cc = st.columns(2)
+            if cc[0].button("추가", key="card_add") and new_m.strip():
+                st.session_state["extra_cards"] = st.session_state.get("extra_cards", []) + [new_m.strip()]
+                st.rerun()
+            if cc[1].button("추가한 결제수단 모두 지우기", key="card_clr"):
+                st.session_state["extra_cards"] = []
+                st.rerun()
+            st.caption("추가한 결제수단은 저장하면 설정.xlsx 에 남습니다.")
+
+        st.divider()
+
+        st.subheader("샘플비용  ·  {}".format(period))
+        st.caption("월을 눌러 옮겨 다니며 입력하세요. **기준월({})** 의 금액이 이번 계산에 차감됩니다. "
+                   "지난 달 값은 그대로 쌓입니다.".format(period))
+
+        # 월 이동 버튼 (카드수수료와 동일 — 기준월이 함께 바뀝니다)
+        srow = st.columns(12)
+        for mth in range(1, 13):
+            key_m = "{}-{:02d}".format(year, mth)
+            filled = float(def_samples_by_month.get(key_m, 0.0)) > 0
+            if srow[mth - 1].button("{}월{}".format(mth, " ●" if filled else ""),
+                                    key="smtab_%s" % key_m,
+                                    type="primary" if key_m == period else "secondary",
+                                    width="stretch"):
+                st.session_state["period_override"] = key_m
+                st.rerun()
+        st.caption("● 표시는 금액이 입력된 달입니다.")
+        st.write("")
+
+        # 선택한 달만 입력
+        smp_year = {"{}-{:02d}".format(year, m): float(def_samples_by_month.get(
+            "{}-{:02d}".format(year, m), 0.0)) for m in range(1, 13)}
+        sc = st.columns([2, 2, 3])
+        sc[0].markdown("<div style='padding-top:.55rem'><b>자체샘플+이벤트지원</b></div>",
+                       unsafe_allow_html=True)
+        v_now = sc[1].number_input("샘플비용 " + period, min_value=0.0,
+                                   value=float(def_samples_by_month.get(period, 0.0)),
+                                   step=1000.0, format="%.0f", key="smp_%s" % period,
+                                   label_visibility="collapsed")
+        smp_year[period] = v_now
+        cum = sum(smp_year.values())
+        sc[2].markdown("<div style='padding-top:.55rem;color:#64748B'>"
+                       "{}년 누적 <b style='color:#0F172A'>{}</b> 원</div>".format(
+                           year[2:], WON.format(cum)), unsafe_allow_html=True)
+
+        with st.expander("{}년 12개월 한눈에 보기".format(year[2:])):
+            st.dataframe(
+                pd.DataFrame([{"월": "{}월".format(m),
+                               "자체샘플+이벤트지원": smp_year["{}-{:02d}".format(year, m)],
+                               "": "◀ 이번 계산" if "{}-{:02d}".format(year, m) == period else ""}
+                              for m in range(1, 13)]),
+                width="stretch", hide_index=True,
+                column_config={"자체샘플+이벤트지원": st.column_config.NumberColumn(format="%d")})
+            st.caption("누적 {} 원".format(WON.format(cum)))
+
+        sample = smp_year.get(period, 0.0)
+        sample_items = [("자체샘플+이벤트지원", sample)]
+        st.metric("{} 차감액".format(period), WON.format(sample) + " 원")
+
+        st.divider()
+        if st.button("입력한 값 저장", type="primary",
+                     help="설정.xlsx 에 저장됩니다. 다음에 열면 그대로 나오고, 배치(실행.bat)도 같은 값을 씁니다."):
+            try:
+                if USE_DB:
+                    db.save_cards(period, cards_in)
+                    db.save_samples(smp_year)
+                    db.save_channels(channels)
+                    db.save_setting("period", period)
+                    st.success("Supabase 에 저장했습니다.")
+                else:
+                    save_config(period, def_sources, def_years, ch_df, cards_in, smp_year,
+                                def_cards_all, def_samples_all)
+                    st.success("저장했습니다 — 입력/설정.xlsx")
+                read_config_defaults.clear()
+            except PermissionError:
+                st.error("설정.xlsx 가 엑셀에서 열려 있습니다. 닫고 다시 시도하세요.")
+            except Exception as e:
+                st.error("저장 실패: {}".format(e))
 
     st.divider()
 
-    st.subheader("샘플비용  ·  {}".format(period))
-    st.caption("월을 눌러 옮겨 다니며 입력하세요. **기준월({})** 의 금액이 이번 계산에 차감됩니다. "
-               "지난 달 값은 그대로 쌓입니다.".format(period))
+    def take_snapshot():
+        """계산에 필요한 모든 것을 한 덩어리로 담아둔다.
+           결과 화면에서는 입력 위젯이 그려지지 않으므로, 재계산 때 이 값을 쓴다."""
+        files = {}
+        for ch in channels:
+            up = uploads.get(ch["name"])
+            if up is not None:
+                files[ch["name"]] = (up.name, up.getvalue())
+        return {
+            "channels": [dict(c) for c in channels], "files": files,
+            "cost": cost, "fee": fee, "origin": origin, "conflicts": conflicts,
+            "override": override, "fee_override": fee_override,
+            "cards": cards, "card_total": card_total,
+            "sample_items": sample_items, "sample": sample, "period": period,
+        }
 
-    # 월 이동 버튼 (카드수수료와 동일 — 기준월이 함께 바뀝니다)
-    srow = st.columns(12)
-    for mth in range(1, 13):
-        key_m = "{}-{:02d}".format(year, mth)
-        filled = float(def_samples_by_month.get(key_m, 0.0)) > 0
-        if srow[mth - 1].button("{}월{}".format(mth, " ●" if filled else ""),
-                                key="smtab_%s" % key_m,
-                                type="primary" if key_m == period else "secondary",
-                                width="stretch"):
-            st.session_state["period_override"] = key_m
+
+    def run_calc(snap=None):
+        """저장된 입력값으로 계산. 화면에서 직접 넣은 원가(manual_cost)도 함께 적용.
+           반환: (성공여부, 사유목록)"""
+        snap = snap or st.session_state.get("calc_snapshot")
+        if not snap:
+            return False, ["계산에 쓸 입력값이 없습니다. 입력 화면에서 다시 계산해 주세요."]
+
+        manual = st.session_state.get("manual_cost", {})
+        ov = dict(snap["override"])
+        for k, v in manual.items():
+            if k and v:
+                ov.setdefault(k, (float(v), False))     # 기준 파일에 없을 때만 쓰임
+
+        results, errs = [], []
+        for ch in snap["channels"]:
+            got = snap["files"].get(ch["name"])
+            if got is None:
+                errs.append("{} — 파일 없음 (건너뜀)".format(ch["name"]))
+                continue
+            fname, data = got
+            try:
+                rows = E.read_sales(io.BytesIO(data), fname)
+            except Exception as e:
+                errs.append("{} ({}) — {}".format(ch["name"], fname, e))
+                continue
+            results.append(E.calc_channel(ch, rows, snap["cost"], snap["fee"],
+                                          ov, snap["fee_override"], snap["origin"]))
+        if not results:
+            st.session_state.pop("out", None)
+            return False, errs
+
+        total = E.apply_totals(results, snap["card_total"], snap["sample"])
+        wb = E.build_report(results, total, snap["cards"], snap["card_total"],
+                            snap["sample_items"], snap["sample"], snap["conflicts"],
+                            snap["period"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        st.session_state["out"] = {
+            "results": results, "total": total, "errs": errs,
+            "xlsx": buf.getvalue(), "period": snap["period"],
+            "manual_used": {k: v for k, v in manual.items() if v},
+        }
+        return True, errs
+
+
+    _prev = (st.session_state.get("calc_snapshot") or {}).get("files", {})
+    ready = cost is not None and (
+        any(uploads.get(ch["name"]) is not None for ch in channels)
+        or any(ch["name"] in _prev for ch in channels))
+    if st.button("이익률 계산", type="primary", disabled=not ready, width="stretch"):
+        snap = take_snapshot()
+        st.session_state["calc_snapshot"] = snap
+        ok, errs = run_calc(snap)
+        if ok:
+            st.session_state["view"] = "result"          # 결과 화면으로 이동
             st.rerun()
-    st.caption("● 표시는 금액이 입력된 달입니다.")
-    st.write("")
+        else:
+            st.error("계산할 파일이 없습니다. 아래 사유를 확인하세요.")
+            for e in errs:
+                st.warning(e)
 
-    # 선택한 달만 입력
-    smp_year = {"{}-{:02d}".format(year, m): float(def_samples_by_month.get(
-        "{}-{:02d}".format(year, m), 0.0)) for m in range(1, 13)}
-    sc = st.columns([2, 2, 3])
-    sc[0].markdown("<div style='padding-top:.55rem'><b>자체샘플+이벤트지원</b></div>",
-                   unsafe_allow_html=True)
-    v_now = sc[1].number_input("샘플비용 " + period, min_value=0.0,
-                               value=float(def_samples_by_month.get(period, 0.0)),
-                               step=1000.0, format="%.0f", key="smp_%s" % period,
-                               label_visibility="collapsed")
-    smp_year[period] = v_now
-    cum = sum(smp_year.values())
-    sc[2].markdown("<div style='padding-top:.55rem;color:#64748B'>"
-                   "{}년 누적 <b style='color:#0F172A'>{}</b> 원</div>".format(
-                       year[2:], WON.format(cum)), unsafe_allow_html=True)
+    _prev_files = (st.session_state.get("calc_snapshot") or {}).get("files", {})
+    _now_up = any(uploads.get(ch["name"]) is not None for ch in channels)
+    if _prev_files and not _now_up:
+        st.info("직전 계산에 쓴 매출 파일 **{}개** 가 남아 있습니다 — {}\n\n"
+                "그대로 다시 계산하거나, 새 파일을 올려 덮어쓸 수 있습니다."
+                .format(len(_prev_files), " · ".join(_prev_files)))
+    elif not ready:
+        if cost is None:
+            st.info("먼저 사이드바에서 **이익률 마스터** 를 지정하세요.")
+        else:
+            st.info("**① 이카운트 매출 파일** 에 파일을 올리면 계산할 수 있습니다.")
 
-    with st.expander("{}년 12개월 한눈에 보기".format(year[2:])):
-        st.dataframe(
-            pd.DataFrame([{"월": "{}월".format(m),
-                           "자체샘플+이벤트지원": smp_year["{}-{:02d}".format(year, m)],
-                           "": "◀ 이번 계산" if "{}-{:02d}".format(year, m) == period else ""}
-                          for m in range(1, 13)]),
-            width="stretch", hide_index=True,
-            column_config={"자체샘플+이벤트지원": st.column_config.NumberColumn(format="%d")})
-        st.caption("누적 {} 원".format(WON.format(cum)))
-
-    sample = smp_year.get(period, 0.0)
-    sample_items = [("자체샘플+이벤트지원", sample)]
-    st.metric("{} 차감액".format(period), WON.format(sample) + " 원")
-
-    st.divider()
-    if st.button("입력한 값 저장", type="primary",
-                 help="설정.xlsx 에 저장됩니다. 다음에 열면 그대로 나오고, 배치(실행.bat)도 같은 값을 씁니다."):
-        try:
-            if USE_DB:
-                db.save_cards(period, cards_in)
-                db.save_samples(smp_year)
-                db.save_channels(channels)
-                db.save_setting("period", period)
-                st.success("Supabase 에 저장했습니다.")
-            else:
-                save_config(period, def_sources, def_years, ch_df, cards_in, smp_year,
-                            def_cards_all, def_samples_all)
-                st.success("저장했습니다 — 입력/설정.xlsx")
-            read_config_defaults.clear()
-        except PermissionError:
-            st.error("설정.xlsx 가 엑셀에서 열려 있습니다. 닫고 다시 시도하세요.")
-        except Exception as e:
-            st.error("저장 실패: {}".format(e))
-
-st.divider()
-
-def run_calc():
-    """업로드된 파일로 계산. 화면에서 직접 넣은 원가(manual_cost)도 함께 적용한다.
-       반환: (성공여부, 사유목록)"""
-    manual = st.session_state.get("manual_cost", {})
-    ov = dict(override)
-    for k, v in manual.items():
-        if k and v:
-            ov.setdefault(k, (float(v), False))     # 기준 파일에 없을 때만 쓰임
-
-    results, errs = [], []
-    for ch in channels:
-        up = uploads.get(ch["name"])
-        if up is None:
-            errs.append("{} — 파일 없음 (건너뜀)".format(ch["name"]))
-            continue
-        try:
-            rows = E.read_sales(io.BytesIO(up.getvalue()), up.name)
-        except Exception as e:
-            errs.append("{} ({}) — {}".format(ch["name"], up.name, e))
-            continue
-        results.append(E.calc_channel(ch, rows, cost, fee, ov, fee_override, origin))
-    if not results:
-        st.session_state.pop("out", None)
-        return False, errs
-
-    total = E.apply_totals(results, card_total, sample)
-    wb = E.build_report(results, total, cards, card_total, sample_items,
-                        sample, conflicts, period)
-    buf = io.BytesIO()
-    wb.save(buf)
-    st.session_state["out"] = {
-        "results": results, "total": total, "errs": errs,
-        "xlsx": buf.getvalue(), "period": period,
-        "manual_used": {k: v for k, v in manual.items() if v},
-    }
-    return True, errs
-
-
-ready = cost is not None and any(uploads.get(ch["name"]) is not None for ch in channels)
-if st.button("이익률 계산", type="primary", disabled=not ready, width="stretch"):
-    ok, errs = run_calc()
-    if not ok:
-        st.error("계산할 파일이 없습니다. 아래 사유를 확인하세요.")
-        for e in errs:
-            st.warning(e)
-
-if not ready:
-    if cost is None:
-        st.info("먼저 사이드바에서 **이익률 마스터** 를 지정하세요.")
-    else:
-        st.info("**① 매출 파일** 탭에서 이카운트 파일을 올리면 계산할 수 있습니다.")
+    if st.session_state.get("out"):
+        st.caption("")
+        if st.button("↩ 지난 계산 결과 다시 보기", width="stretch"):
+            st.session_state["view"] = "result"
+            st.rerun()
 
 # ---------------------------------------------------------------- 결과
 out = st.session_state.get("out")

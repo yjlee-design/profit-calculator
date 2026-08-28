@@ -151,7 +151,10 @@ def connect():
         raise RuntimeError("DB 접속 정보가 없습니다. .streamlit/secrets.toml 의 [db] url 을 채우세요.")
     if psycopg is None:
         raise RuntimeError("psycopg 가 설치되어 있지 않습니다.  pip install \"psycopg[binary]\"")
-    return psycopg.connect(url, row_factory=dict_row, connect_timeout=10)
+    # Supabase 풀러(6543, 트랜잭션 모드)는 prepared statement 를 지원하지 않는다.
+    # prepare_threshold=None 으로 꺼야 executemany 가 동작한다.
+    return psycopg.connect(url, row_factory=dict_row, connect_timeout=10,
+                           prepare_threshold=None)
 
 
 def init_schema():

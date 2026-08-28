@@ -1,5 +1,8 @@
 # ── 비밀정보 (절대 올리면 안 됨) ────────────────
 .streamlit/secrets.toml
+Secrets*
+secrets*
+*붙여넣기*
 비밀번호*
 *비밀번호*.txt
 *password*

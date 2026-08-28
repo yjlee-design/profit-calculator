@@ -203,8 +203,10 @@ def load_overrides():
 def load_cards():
     """{기준월: [(결제수단, 금액, 요율), ...]}"""
     out = {}
-    for r in _rows("select period, method, amount, rate from card_fee "
-                   "order by period, method"):
+    order = {m: i for i, (m, _r) in enumerate(
+        [("신용카드", 0), ("무통장입금", 0), ("페이코", 0), ("토스", 0)])}
+    for r in sorted(_rows("select period, method, amount, rate from card_fee"),
+                    key=lambda x: (x["period"], order.get(x["method"], 99), x["method"])):
         out.setdefault(r["period"], []).append(
             (r["method"], float(r["amount"]), float(r["rate"])))
     return out

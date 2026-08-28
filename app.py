@@ -600,6 +600,53 @@ if True:
     st.caption("월을 눌러 옮겨 다니며 입력하세요. 선택한 달이 **기준월**이 되어 계산에 쓰입니다. "
                "결제수단별 **정상금액**만 채우면 수수료가 자동 계산됩니다.")
 
+    # ---- 스룩페이 매출통계 파일로 자동 입력
+    srk = st.file_uploader(
+        "스룩페이 매출통계 파일 올리기  (매출/정산 → 엑셀 내려받기)",
+        type=["xlsx", "xlsm"], key="up_srook_%s" % period,
+        help="결제수단별 [정상금액]을 읽어 아래 칸을 자동으로 채웁니다. "
+             "수수료는 아래 요율로 계산합니다.")
+    if srk is not None:
+        sig = "{}:{}:{}".format(period, srk.name, srk.size)
+        try:
+            sk = E.read_srookpay(io.BytesIO(srk.getvalue()))
+            st.session_state["srook_" + period] = sk
+            if st.session_state.get("srook_applied") != sig:
+                # 위치가 아니라 **결제수단 이름**으로 맞춘다 (순서가 다를 수 있음)
+                slot = {E.norm(m): i for i, (m, _a, _r) in enumerate(def_cards)}
+                unmatched = []
+                for m, a, _f, _r in sk["rows"]:
+                    i = slot.get(E.norm(m))
+                    if i is None:
+                        unmatched.append(m)
+                        continue
+                    st.session_state["card_amt_%s_%d" % (period, i)] = float(a)
+                # 파일에는 없는 결제수단은 0 으로 (지난달 값이 남지 않도록)
+                in_file = {E.norm(m) for m, _a, _f, _r in sk["rows"]}
+                for i, (m, _a, _r) in enumerate(def_cards):
+                    if E.norm(m) not in in_file:
+                        st.session_state["card_amt_%s_%d" % (period, i)] = 0.0
+                st.session_state["srook_unmatched"] = unmatched
+                st.session_state["srook_applied"] = sig
+                st.rerun()
+        except Exception as e:
+            st.error("스룩페이 파일을 읽지 못했습니다 — {}".format(e))
+
+    sk = st.session_state.get("srook_" + period)
+    if sk:
+        pf, pt = sk["period_from"], sk["period_to"]
+        want = period                                   # 예: 2026-08
+        ok_month = (not pf) or (pf[:7] == want and pt[:7] == want)
+        msg = "스룩페이 자료 **{} ~ {}** · 정상금액 합계 {} 원".format(
+            pf or "?", pt or "?", WON.format(sk["total_amount"]))
+        (st.success if ok_month else st.warning)(msg)
+        if not ok_month:
+            st.warning("이 파일의 기간이 기준월({})과 다릅니다. 월을 확인하세요.".format(period))
+        _um = st.session_state.get("srook_unmatched") or []
+        if _um:
+            st.warning("아래 목록에 없는 결제수단이라 채우지 못했습니다: **{}**  "
+                       "→ [결제수단 추가·삭제] 에서 같은 이름으로 추가하세요.".format(", ".join(_um)))
+
     # 월 이동 버튼 — 누르면 그 달로 기준월이 바뀐다
     mrow = st.columns(12)
     for m in range(1, 13):
@@ -647,6 +694,7 @@ if True:
     t[4].markdown("<div style='text-align:right'><b>{}</b></div>".format(WON.format(fee_sum)),
                   unsafe_allow_html=True)
     cards, card_total = E.card_rows_total(cards_in)
+
 
     with st.expander("결제수단 추가·삭제"):
         new_m = st.text_input("추가할 결제수단 이름", key="card_new")

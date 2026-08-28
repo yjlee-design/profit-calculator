@@ -103,6 +103,85 @@ def is_junk(code_raw, name):
             or norm(code_raw) in _SKIP_WORDS)
 
 
+# ---------------------------------------------------------------- 스룩페이 매출통계
+# 스룩페이 → 매출/정산 → [엑셀 내려받기] 로 받은 파일에서 결제수단별 금액을 읽는다.
+#   시트 '매출내역 기간 통계' :  결제수단 | ... | 정상금액 | ... | 수수료
+#   정상금액 = 결제합계 - 취소합계   (7월까지 손으로 옮겨 적던 그 값)
+#   수수료   = 스룩페이가 건별로 계산한 실제 수수료 (요율 x 금액보다 정확)
+SROOK_SHEETS = ("매출내역 기간 통계", "매출내역기간통계")
+SROOK_DAILY = ("일별 매출 리스트(합계)", "일별매출리스트(합계)")
+
+
+def read_srookpay(src):
+    """스룩페이 매출통계 엑셀 → dict
+       {rows: [(결제수단, 정상금액, 수수료, 추정요율)], total_amount, total_fee,
+        period_from, period_to}"""
+    wb = open_wb(src, read_only=True, data_only=True)
+    try:
+        sheet = None
+        for ws in wb.worksheets:
+            if norm(ws.title) in {norm(x) for x in SROOK_SHEETS}:
+                sheet = list(ws.iter_rows(values_only=True))
+                break
+        if sheet is None:                      # 시트 이름이 달라도 헤더로 찾아본다
+            for ws in wb.worksheets:
+                rows = list(ws.iter_rows(values_only=True))
+                if rows and any(norm(v) == "결제수단" for v in rows[0] if v):
+                    sheet = rows
+                    break
+        if sheet is None:
+            raise ValueError(
+                "'매출내역 기간 통계' 시트를 찾지 못했습니다.\n"
+                "스룩페이 → 매출/정산 화면에서 [엑셀 내려받기] 로 받은 파일이 맞는지 확인하세요.")
+
+        hdr = {norm(v): i for i, v in enumerate(sheet[0]) if v}
+        need = ("결제수단", "정상금액")
+        miss = [n for n in need if n not in hdr]
+        if miss:
+            raise ValueError("이 파일에 [{}] 열이 없습니다. 열 이름: {}".format(
+                " · ".join(miss), " | ".join(list(hdr)[:12])))
+
+        i_m, i_a = hdr["결제수단"], hdr["정상금액"]
+        i_f = hdr.get("수수료")
+        out, t_amt, t_fee = [], 0.0, 0.0
+        for r in sheet[1:]:
+            m = r[i_m] if i_m < len(r) else None
+            if not m or not str(m).strip():
+                continue
+            name = str(m).strip()
+            amt = num(r[i_a]) if i_a < len(r) else 0.0
+            fee = num(r[i_f]) if (i_f is not None and i_f < len(r)) else 0.0
+            if norm(name) in ("소계", "합계", "총계"):     # 소계는 검산용으로만
+                t_amt, t_fee = amt, fee
+                continue
+            out.append((name, amt, fee, (fee / amt) if amt else 0.0))
+        if not out:
+            raise ValueError("결제수단 행을 읽지 못했습니다.")
+        if not t_amt:
+            t_amt = sum(x[1] for x in out)
+            t_fee = sum(x[2] for x in out)
+
+        # 조회 기간 — 일별 시트의 첫/마지막 날짜
+        p_from = p_to = ""
+        for ws in wb.worksheets:
+            if norm(ws.title) in {norm(x) for x in SROOK_DAILY}:
+                days = []
+                for r in list(ws.iter_rows(values_only=True))[1:]:
+                    v = r[0] if r else None
+                    if not v:
+                        continue
+                    m2 = re.search(r"(20\d{2}-\d{2}-\d{2})", str(v))
+                    if m2:
+                        days.append(m2.group(1))
+                if days:
+                    p_from, p_to = min(days), max(days)
+                break
+    finally:
+        wb.close()
+    return {"rows": out, "total_amount": t_amt, "total_fee": t_fee,
+            "period_from": p_from, "period_to": p_to}
+
+
 def is_delivery(r):
     return (r["group_code"].upper() in DELIVERY_GROUP_CODES
             or norm(r["group_name"]) in {norm(x) for x in DELIVERY_GROUP_NAMES})

@@ -837,6 +837,49 @@ if out:
                 delta="판매액 " + WON.format(sum(x[4] for x in miss)) + "원",
                 delta_color="inverse" if miss else "off")
 
+    # ---- 채널별 한눈에 보기
+    st.write("")
+    st.markdown("##### 채널별")
+    ch_cols = st.columns(len(results) or 1)
+    for col, res in zip(ch_cols, results):
+        rate_ = res["profit"] / res["sales"] if res["sales"] else 0.0
+        tone = "#10B981" if rate_ >= 0.25 else ("#6366F1" if rate_ >= 0.15 else "#F59E0B")
+        cuts = []
+        if res["fee"]:
+            cuts.append(("셀러수수료", res["fee"]))
+        if res["card"]:
+            cuts.append(("카드수수료", res["card"]))
+        if res["sample"]:
+            cuts.append(("샘플비용", res["sample"]))
+        cut_html = "".join(
+            "<div style='display:flex;justify-content:space-between;font-size:.76rem;"
+            "color:#94A3B8;margin-top:.15rem'><span>− {}</span><span>{}</span></div>"
+            .format(n, WON.format(v)) for n, v in cuts)
+        col.markdown(
+            "<div style='background:#FFFFFF;border:1px solid #E2E8F0;border-radius:12px;"
+            "padding:1.05rem 1.15rem;box-shadow:0 1px 2px rgba(15,23,42,.04)'>"
+            "<div style='font-size:.86rem;font-weight:700;color:#0F172A'>{name}</div>"
+            "<div style='font-size:1.75rem;font-weight:700;color:{tone};"
+            "letter-spacing:-.03em;line-height:1.3;margin:.15rem 0 .5rem'>{rate:.2f}%</div>"
+            "<div style='display:flex;justify-content:space-between;font-size:.8rem;"
+            "color:#64748B'><span>상품매출</span><span style='color:#0F172A'>{sales}</span></div>"
+            "<div style='display:flex;justify-content:space-between;font-size:.8rem;"
+            "color:#64748B;margin-top:.15rem'><span>상품원가</span><span>{cost}</span></div>"
+            "{cuts}"
+            "<div style='border-top:1px solid #E2E8F0;margin:.5rem 0 .35rem'></div>"
+            "<div style='display:flex;justify-content:space-between;font-size:.86rem;"
+            "font-weight:700;color:#0F172A'><span>이익액</span><span>{profit}</span></div>"
+            "<div style='display:flex;justify-content:space-between;font-size:.75rem;"
+            "color:#94A3B8;margin-top:.3rem'><span>배송매출(제외)</span><span>{deli}</span></div>"
+            "</div>".format(
+                name=res["ch"]["name"], tone=tone, rate=rate_ * 100,
+                sales=WON.format(res["sales"]), cost=WON.format(res["cost"]),
+                cuts=cut_html, profit=WON.format(res["profit"]),
+                deli=WON.format(res["delivery_sales"])),
+            unsafe_allow_html=True)
+    st.caption("이익률 = 이익액 ÷ 상품매출 · 배송은 매출=원가로 처리해 이익에서 제외")
+    st.write("")
+
     st.download_button(
         "결과 엑셀 다운로드",
         data=out["xlsx"],

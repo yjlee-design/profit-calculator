@@ -534,6 +534,13 @@ if USE_DB:
     else:
         st.sidebar.caption("아직 동기화 기록이 없습니다. 사무실 PC 에서 `동기화.bat` 을 실행하세요.")
 else:
+    _prob = None
+    try:
+        _prob = db.url_problem()
+    except Exception:
+        pass
+    if _prob:
+        st.sidebar.warning("DB 미연결 — " + _prob)
     st.sidebar.caption("💾 파일 모드 (이 PC 의 엑셀 파일 사용)")
 auth.logout_button()
 

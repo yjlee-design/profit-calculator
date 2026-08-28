@@ -92,15 +92,52 @@ create table if not exists sync_log (
 
 
 # ---------------------------------------------------------------- 접속
+# 아직 값을 안 채운 예시 주소를 걸러낸다 (이걸 그냥 두면 앱이 DB 모드로 잘못 켜진다)
+PLACEHOLDERS = ("[YOUR-PASSWORD]", "YOUR-PASSWORD", "비밀번호@", "postgresql://...",
+                "xxxx", "여기에")
+
+
+def looks_filled(url):
+    """접속 문자열이 실제 값으로 채워졌는지"""
+    if not url or not str(url).strip():
+        return False
+    u = str(url)
+    return not any(p in u for p in PLACEHOLDERS)
+
+
 def get_url():
-    """secrets.toml → 환경변수 순으로 접속 문자열을 찾는다. 없으면 None."""
+    """secrets.toml → 환경변수 순으로 접속 문자열을 찾는다. 없거나 미완성이면 None."""
+    cand = None
     try:
         import streamlit as st
         if "db" in st.secrets and st.secrets["db"].get("url"):
-            return st.secrets["db"]["url"]
+            cand = st.secrets["db"]["url"]
     except Exception:
         pass
-    return os.environ.get("PROFIT_DB_URL") or None
+    cand = cand or os.environ.get("PROFIT_DB_URL")
+    return cand if looks_filled(cand) else None
+
+
+def url_problem():
+    """접속 문자열에 문제가 있으면 사람이 읽을 안내문을 돌려준다. 없으면 None."""
+    raw = None
+    try:
+        import streamlit as st
+        if "db" in st.secrets:
+            raw = st.secrets["db"].get("url")
+    except Exception:
+        pass
+    raw = raw or os.environ.get("PROFIT_DB_URL")
+    if not raw:
+        return None
+    if not looks_filled(raw):
+        return ("접속 문자열에 예시 값이 그대로 남아 있습니다. "
+                "`[YOUR-PASSWORD]` 를 실제 DB 비밀번호로 바꿔주세요.")
+    if "db." in raw and ".supabase.co" in raw and ":5432" in raw:
+        return ("직접 연결(5432) 주소입니다. 이 주소는 IPv6 전용이라 "
+                "Streamlit Cloud 에서 접속되지 않습니다. "
+                "Supabase 의 **Connection pooling** 주소(6543)를 쓰세요.")
+    return None
 
 
 def enabled():

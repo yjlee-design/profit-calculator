@@ -326,6 +326,51 @@ def append_overrides(typed, names):
     return n
 
 
+INPUT_DIR_SAVE = BASE / "결과" / "입력보관"
+
+
+def save_month_files(period, files):
+    """그 달에 쓴 매출 파일을 보관 — 페이지를 나갔다 와도 결과가 남도록"""
+    if not files:
+        return
+    if db.enabled():
+        try:
+            db.save_month_files(period, files)
+            return
+        except Exception:
+            pass
+    try:
+        d = INPUT_DIR_SAVE / period
+        d.mkdir(parents=True, exist_ok=True)
+        for old in d.glob("*"):
+            old.unlink()
+        for ch, (fn, data) in files.items():
+            (d / "{}__{}".format(ch, fn)).write_bytes(data)
+    except OSError:
+        pass
+
+
+def load_month_files(period):
+    """{채널명: (파일명, bytes)}  없으면 {}"""
+    if db.enabled():
+        try:
+            got = db.load_month_files(period)
+            if got:
+                return got
+        except Exception:
+            pass
+    out = {}
+    try:
+        d = INPUT_DIR_SAVE / period
+        if d.is_dir():
+            for f in d.glob("*__*"):
+                ch, fn = f.name.split("__", 1)
+                out[ch] = (fn, f.read_bytes())
+    except OSError:
+        pass
+    return out
+
+
 HISTORY_FILE = BASE / "결과" / "월별추이.json"
 
 
@@ -593,6 +638,79 @@ auth.logout_button()
 
 
 # ---------------------------------------------------------------- 본문
+def run_calc(snap=None):
+    """저장된 입력값으로 계산. 화면에서 직접 넣은 원가(manual_cost)도 함께 적용.
+       반환: (성공여부, 사유목록)"""
+    snap = snap or st.session_state.get("calc_snapshot")
+    if not snap:
+        return False, ["계산에 쓸 입력값이 없습니다. 입력 화면에서 다시 계산해 주세요."]
+
+    manual = st.session_state.get("manual_cost", {})
+    ov = dict(snap["override"])
+    for k, v in manual.items():
+        if k and v:
+            ov.setdefault(k, (float(v), False))     # 기준 파일에 없을 때만 쓰임
+
+    results, errs = [], []
+    for ch in snap["channels"]:
+        got = snap["files"].get(ch["name"])
+        if got is None:
+            errs.append("{} — 파일 없음 (건너뜀)".format(ch["name"]))
+            continue
+        fname, data = got
+        try:
+            rows = E.read_sales(io.BytesIO(data), fname)
+        except Exception as e:
+            errs.append("{} ({}) — {}".format(ch["name"], fname, e))
+            continue
+        results.append(E.calc_channel(ch, rows, snap["cost"], snap["fee"],
+                                      ov, snap["fee_override"], snap["origin"]))
+    if not results:
+        st.session_state.pop("out", None)
+        return False, errs
+
+    total = E.apply_totals(results, snap["card_total"], snap["sample"])
+    wb = E.build_report(results, total, snap["cards"], snap["card_total"],
+                        snap["sample_items"], snap["sample"], snap["conflicts"],
+                        snap["period"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    st.session_state["out"] = {
+        "results": results, "total": total, "errs": errs,
+        "xlsx": buf.getvalue(), "period": snap["period"],
+        "manual_used": {k: v for k, v in manual.items() if v},
+    }
+    save_history(snap["period"], results, total)     # 월별 추이 그래프용 이력
+    save_month_files(snap["period"], snap["files"])   # 다음에 열어도 결과가 보이도록
+    return True, errs
+
+
+_prev = (st.session_state.get("calc_snapshot") or {}).get("files", {})
+
+# ---- 페이지를 새로 열었을 때, 그 달의 저장된 결과를 되살린다
+if not st.session_state.get("out") and not st.session_state.get("restore_done"):
+    st.session_state["restore_done"] = True
+    _saved = load_month_files(period)
+    if _saved and cost:
+        _snap = {
+            "channels": [dict(c) for c in def_channels], "files": _saved,
+            "cost": cost, "fee": fee, "origin": origin, "conflicts": conflicts or [],
+            "override": override, "fee_override": fee_override,
+            "cards": [], "card_total": 0.0,
+            "sample_items": [], "sample": 0.0, "period": period,
+        }
+        # 그 달의 비용은 설정에서 다시 읽어 채운다
+        _c = def_cards_all.get(period, [])
+        _snap["cards"], _snap["card_total"] = E.card_rows_total(_c)
+        _sm = float(def_samples_by_month.get(period, 0.0))
+        _snap["sample_items"], _snap["sample"] = [("자체샘플+이벤트지원", _sm)], _sm
+        with st.spinner("{} 저장된 결과 불러오는 중...".format(period)):
+            _ok, _ = run_calc(_snap)
+        if _ok:
+            st.session_state["calc_snapshot"] = _snap
+            st.session_state["view"] = "result"
+            st.session_state["restored_from_save"] = True
+
 VIEW = st.session_state.setdefault("view", "input")
 
 if VIEW == "result" and not st.session_state.get("out"):
@@ -606,6 +724,10 @@ if VIEW == "result":
     if _c2.button("← 입력 화면으로", width="stretch"):
         st.session_state["view"] = "input"
         st.rerun()
+    if st.session_state.pop("restored_from_save", False):
+        st.info("저장해 둔 **{}** 자료로 다시 계산했습니다. "
+                "새 자료로 바꾸려면 **← 입력 화면으로** 가서 파일을 다시 올리세요."
+                .format(_o["period"]))
 else:
     st.title("이익률 계산")
 if VIEW == "input":
@@ -854,53 +976,6 @@ if VIEW == "input":
         }
 
 
-    def run_calc(snap=None):
-        """저장된 입력값으로 계산. 화면에서 직접 넣은 원가(manual_cost)도 함께 적용.
-           반환: (성공여부, 사유목록)"""
-        snap = snap or st.session_state.get("calc_snapshot")
-        if not snap:
-            return False, ["계산에 쓸 입력값이 없습니다. 입력 화면에서 다시 계산해 주세요."]
-
-        manual = st.session_state.get("manual_cost", {})
-        ov = dict(snap["override"])
-        for k, v in manual.items():
-            if k and v:
-                ov.setdefault(k, (float(v), False))     # 기준 파일에 없을 때만 쓰임
-
-        results, errs = [], []
-        for ch in snap["channels"]:
-            got = snap["files"].get(ch["name"])
-            if got is None:
-                errs.append("{} — 파일 없음 (건너뜀)".format(ch["name"]))
-                continue
-            fname, data = got
-            try:
-                rows = E.read_sales(io.BytesIO(data), fname)
-            except Exception as e:
-                errs.append("{} ({}) — {}".format(ch["name"], fname, e))
-                continue
-            results.append(E.calc_channel(ch, rows, snap["cost"], snap["fee"],
-                                          ov, snap["fee_override"], snap["origin"]))
-        if not results:
-            st.session_state.pop("out", None)
-            return False, errs
-
-        total = E.apply_totals(results, snap["card_total"], snap["sample"])
-        wb = E.build_report(results, total, snap["cards"], snap["card_total"],
-                            snap["sample_items"], snap["sample"], snap["conflicts"],
-                            snap["period"])
-        buf = io.BytesIO()
-        wb.save(buf)
-        st.session_state["out"] = {
-            "results": results, "total": total, "errs": errs,
-            "xlsx": buf.getvalue(), "period": snap["period"],
-            "manual_used": {k: v for k, v in manual.items() if v},
-        }
-        save_history(snap["period"], results, total)     # 월별 추이 그래프용 이력
-        return True, errs
-
-
-    _prev = (st.session_state.get("calc_snapshot") or {}).get("files", {})
     ready = cost is not None and (
         any(uploads.get(ch["name"]) is not None for ch in channels)
         or any(ch["name"] in _prev for ch in channels))

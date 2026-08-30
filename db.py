@@ -95,6 +95,14 @@ create table if not exists monthly_result (
     saved_at   timestamptz not null default now(),
     primary key (period, channel)
 );
+create table if not exists monthly_input (
+    period    text not null,
+    channel   text not null,
+    filename  text not null,
+    content   bytea not null,
+    saved_at  timestamptz not null default now(),
+    primary key (period, channel)
+);
 create table if not exists sync_log (
     id         bigserial primary key,
     kind       text,
@@ -382,6 +390,35 @@ def load_month_results():
              for k, v in r.items() if k != "saved_at"}
             for r in _rows("select period, channel, sales, cost, fee, card, sample, "
                            "profit, delivery from monthly_result order by period, channel")]
+
+
+def save_month_files(period, files):
+    """그 달에 쓴 이카운트 매출 파일을 통째로 보관 (페이지를 나갔다 와도 결과 복원용).
+       files: {채널명: (파일명, bytes)}"""
+    if not files:
+        return 0
+    with connect() as cn, cn.cursor() as cur:
+        cur.execute("delete from monthly_input where period = %s", (period,))
+        cur.executemany(
+            "insert into monthly_input(period, channel, filename, content) "
+            "values (%s, %s, %s, %s)",
+            [(period, ch, fn, data) for ch, (fn, data) in files.items()])
+        cn.commit()
+    return len(files)
+
+
+def load_month_files(period):
+    """{채널명: (파일명, bytes)}  없으면 {}"""
+    out = {}
+    for r in _rows("select channel, filename, content from monthly_input "
+                   "where period = %s", (period,)):
+        out[r["channel"]] = (r["filename"], bytes(r["content"]))
+    return out
+
+
+def months_with_input():
+    return [r["period"] for r in
+            _rows("select distinct period from monthly_input order by period")]
 
 
 def log_sync(kind, detail):

@@ -326,6 +326,53 @@ def append_overrides(typed, names):
     return n
 
 
+HISTORY_FILE = BASE / "결과" / "월별추이.json"
+
+
+def save_history(period, results, total):
+    """이 달 결과를 이력에 남긴다 (DB 우선, 없으면 결과/월별추이.json)"""
+    rows = [{"period": period, "channel": r["ch"]["name"], "sales": r["sales"],
+             "cost": r["cost"], "fee": r["fee"], "card": r.get("card", 0),
+             "sample": r.get("sample", 0), "profit": r["profit"],
+             "delivery": r["delivery_sales"]} for r in results]
+    rows.append({"period": period, "channel": "전체", "sales": total["sales"],
+                 "cost": total["cost"], "fee": total["fee"], "card": total["card"],
+                 "sample": total["sample"], "profit": total["profit"],
+                 "delivery": total["delivery"]})
+    if db.enabled():
+        try:
+            db.save_month_result(period, results, total)
+            return
+        except Exception:
+            pass
+    try:
+        import json
+        old = []
+        if HISTORY_FILE.exists():
+            old = [x for x in json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+                   if x.get("period") != period]
+        HISTORY_FILE.parent.mkdir(exist_ok=True)
+        HISTORY_FILE.write_text(json.dumps(old + rows, ensure_ascii=False, indent=1),
+                                encoding="utf-8")
+    except OSError:
+        pass
+
+
+def load_history():
+    if db.enabled():
+        try:
+            return db.load_month_results()
+        except Exception:
+            pass
+    try:
+        import json
+        if HISTORY_FILE.exists():
+            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    return []
+
+
 # ---------------------------------------------------------------- 기준 파일 로드 (캐시)
 @st.cache_data(show_spinner="기준 파일 읽는 중...")
 def load_lookups_cached(blobs):
@@ -666,14 +713,12 @@ if VIEW == "input":
         mrow = st.columns(12)
         for m in range(1, 13):
             key_m = "{}-{:02d}".format(year, m)
-            filled = any(a for _n, a, _r in def_cards_all.get(key_m, []))
-            label = "{}월{}".format(m, " ●" if filled else "")
+            label = "{}월{}".format(m, " ●" if key_m == period else "")
             if mrow[m - 1].button(label, key="mtab_%s" % key_m,
                                   type="primary" if key_m == period else "secondary",
                                   width="stretch"):
                 st.session_state["period_override"] = key_m
                 st.rerun()
-        st.caption("● 표시는 금액이 입력된 달입니다.")
         st.write("")
 
         CARD_W = [2, 2, 1.1, 0.35, 2]        # 결제수단 / 정상금액 / 수수료율 / % / 수수료
@@ -732,14 +777,12 @@ if VIEW == "input":
         srow = st.columns(12)
         for mth in range(1, 13):
             key_m = "{}-{:02d}".format(year, mth)
-            filled = float(def_samples_by_month.get(key_m, 0.0)) > 0
-            if srow[mth - 1].button("{}월{}".format(mth, " ●" if filled else ""),
+            if srow[mth - 1].button("{}월{}".format(mth, " ●" if key_m == period else ""),
                                     key="smtab_%s" % key_m,
                                     type="primary" if key_m == period else "secondary",
                                     width="stretch"):
                 st.session_state["period_override"] = key_m
                 st.rerun()
-        st.caption("● 표시는 금액이 입력된 달입니다.")
         st.write("")
 
         # 선택한 달만 입력
@@ -853,6 +896,7 @@ if VIEW == "input":
             "xlsx": buf.getvalue(), "period": snap["period"],
             "manual_used": {k: v for k, v in manual.items() if v},
         }
+        save_history(snap["period"], results, total)     # 월별 추이 그래프용 이력
         return True, errs
 
 
@@ -979,6 +1023,102 @@ if out:
         column_config={**{c: st.column_config.NumberColumn(format="%d") for c in money_cols},
                        "이익률": st.column_config.NumberColumn(format="percent")})
     st.caption("* 배송 이익 제외 — 배송매출은 원가와 같게 처리하여 이익 0")
+
+    # ---- 월별 추이
+    hist = load_history()
+    if hist:
+        import altair as alt
+        hdf = pd.DataFrame(hist)
+        hdf["이익률"] = hdf.apply(
+            lambda r: (r["profit"] / r["sales"]) if r["sales"] else 0.0, axis=1)
+        months = sorted(hdf["period"].unique())
+
+        if len(months) >= 2:
+            st.write("")
+            st.markdown("##### 월별 추이")
+
+            INK, MUTED, LINE, SURF = "#0F172A", "#64748B", "#E2E8F0", "#FFFFFF"
+            # 검증된 카테고리 순서 (blue → orange → aqua → yellow) + 전체는 강조색
+            CH_ORDER = [r["ch"]["name"] for r in results]
+            CH_HUES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                       "#e87ba4", "#008300", "#4a3aa7", "#e34948"][:len(CH_ORDER)]
+            AX = alt.Axis(labelColor=MUTED, titleColor=MUTED, tickColor=LINE,
+                          domainColor=LINE, labelFontSize=11, titleFontSize=11,
+                          grid=True, gridColor=LINE, gridOpacity=.7)
+
+            g1, g2 = st.columns(2)
+
+            # ① 전체 이익률 — 단일 계열이라 범례 없이 제목이 이름을 대신한다
+            tot = hdf[hdf["channel"] == "전체"].sort_values("period")
+            base = alt.Chart(tot).encode(
+                x=alt.X("period:O", title=None, axis=AX),
+                y=alt.Y("이익률:Q", title="이익률", axis=alt.Axis(format="%", **{
+                    k: v for k, v in AX.to_dict().items() if k != "format"})),
+                tooltip=[alt.Tooltip("period:O", title="기준월"),
+                         alt.Tooltip("이익률:Q", format=".2%"),
+                         alt.Tooltip("sales:Q", title="상품매출", format=",.0f"),
+                         alt.Tooltip("profit:Q", title="이익액", format=",.0f")])
+            g1.markdown("**전체 이익률**")
+            g1.altair_chart(
+                (base.mark_line(color="#6366F1", strokeWidth=2, point=alt.OverlayMarkDef(
+                    color="#6366F1", size=60, filled=True))
+                 + base.mark_text(dy=-14, fontSize=11, color=INK).encode(
+                     text=alt.Text("이익률:Q", format=".1%"))
+                 ).properties(height=260, background=SURF)
+                .configure_view(strokeWidth=0), use_container_width=True)
+
+            # ② 채널별 이익률 — 계열이 곧 주제이므로 categorical
+            ch = hdf[hdf["channel"] != "전체"].sort_values(["period", "channel"])
+            g2.markdown("**채널별 이익률**")
+            g2.altair_chart(
+                alt.Chart(ch).mark_line(strokeWidth=2, point=alt.OverlayMarkDef(
+                    size=45, filled=True)).encode(
+                    x=alt.X("period:O", title=None, axis=AX),
+                    y=alt.Y("이익률:Q", title="이익률", axis=alt.Axis(format="%", **{
+                        k: v for k, v in AX.to_dict().items() if k != "format"})),
+                    color=alt.Color("channel:N", title=None,
+                                    scale=alt.Scale(domain=CH_ORDER, range=CH_HUES),
+                                    legend=alt.Legend(orient="top", labelColor=MUTED,
+                                                      symbolStrokeWidth=2, labelFontSize=11)),
+                    tooltip=[alt.Tooltip("period:O", title="기준월"),
+                             alt.Tooltip("channel:N", title="채널"),
+                             alt.Tooltip("이익률:Q", format=".2%"),
+                             alt.Tooltip("profit:Q", title="이익액", format=",.0f")]
+                ).properties(height=260, background=SURF)
+                .configure_view(strokeWidth=0), use_container_width=True)
+
+            # ③ 매출과 이익액 — 같은 단위(원)라 한 축에 둘 다 올린다 (이중축 금지)
+            st.markdown("**월별 상품매출 · 이익액**")
+            bars = tot.melt(id_vars="period", value_vars=["sales", "profit"],
+                            var_name="구분", value_name="금액")
+            bars["구분"] = bars["구분"].map({"sales": "상품매출", "profit": "이익액"})
+            st.altair_chart(
+                alt.Chart(bars).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4,
+                                         strokeWidth=2, stroke=SURF).encode(
+                    x=alt.X("period:O", title=None, axis=AX),
+                    xOffset=alt.XOffset("구분:N"),
+                    y=alt.Y("금액:Q", title="원", axis=AX),
+                    color=alt.Color("구분:N", title=None,
+                                    scale=alt.Scale(domain=["상품매출", "이익액"],
+                                                    range=["#2a78d6", "#eb6834"]),
+                                    legend=alt.Legend(orient="top", labelColor=MUTED,
+                                                      labelFontSize=11)),
+                    tooltip=[alt.Tooltip("period:O", title="기준월"),
+                             alt.Tooltip("구분:N"),
+                             alt.Tooltip("금액:Q", format=",.0f")]
+                ).properties(height=270, background=SURF)
+                .configure_view(strokeWidth=0), use_container_width=True)
+
+            with st.expander("월별 표로 보기"):
+                piv = hdf.pivot_table(index="period", columns="channel",
+                                      values="이익률", aggfunc="first").reset_index()
+                piv = piv.rename(columns={"period": "기준월"})
+                st.dataframe(piv, width="stretch", hide_index=True,
+                             column_config={c: st.column_config.NumberColumn(format="percent")
+                                            for c in piv.columns if c != "기준월"})
+        else:
+            st.caption("월별 추이 그래프는 **2개월 이상** 계산하면 나타납니다. "
+                       "(현재 {}개월 기록)".format(len(months)))
 
     tabs = st.tabs(["배송비", "미매칭", "셀러수수료 기본율", "보정적용내역", "중복코드 점검"]
                    + [r["ch"]["name"] for r in results])

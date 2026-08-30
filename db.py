@@ -82,6 +82,19 @@ create table if not exists app_setting (
     key   text primary key,
     value text
 );
+create table if not exists monthly_result (
+    period     text not null,
+    channel    text not null,
+    sales      numeric not null default 0,
+    cost       numeric not null default 0,
+    fee        numeric not null default 0,
+    card       numeric not null default 0,
+    sample     numeric not null default 0,
+    profit     numeric not null default 0,
+    delivery   numeric not null default 0,
+    saved_at   timestamptz not null default now(),
+    primary key (period, channel)
+);
 create table if not exists sync_log (
     id         bigserial primary key,
     kind       text,
@@ -343,6 +356,32 @@ def save_channels(channels):
               bool(c.get("sample")), float(c.get("fee_base") or 0))
              for i, c in enumerate(channels)])
         cn.commit()
+
+
+def save_month_result(period, results, total):
+    """그 달의 계산 결과를 통째로 갈아끼운다 (월별 추이 그래프용)"""
+    rows = [(period, r["ch"]["name"], r["sales"], r["cost"], r["fee"],
+             r.get("card", 0), r.get("sample", 0), r["profit"], r["delivery_sales"])
+            for r in results]
+    rows.append((period, "전체", total["sales"], total["cost"], total["fee"],
+                 total["card"], total["sample"], total["profit"], total["delivery"]))
+    with connect() as cn, cn.cursor() as cur:
+        cur.execute("delete from monthly_result where period = %s", (period,))
+        cur.executemany(
+            "insert into monthly_result(period, channel, sales, cost, fee, card, "
+            "sample, profit, delivery) values (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            [(p, c, float(a), float(b), float(d), float(e), float(f), float(g), float(h))
+             for p, c, a, b, d, e, f, g, h in rows])
+        cn.commit()
+    return len(rows)
+
+
+def load_month_results():
+    """[{period, channel, sales, cost, profit, ...}, ...] 기간 오름차순"""
+    return [{k: (float(v) if k not in ("period", "channel", "saved_at") else v)
+             for k, v in r.items() if k != "saved_at"}
+            for r in _rows("select period, channel, sales, cost, fee, card, sample, "
+                           "profit, delivery from monthly_result order by period, channel")]
 
 
 def log_sync(kind, detail):

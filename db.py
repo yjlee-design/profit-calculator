@@ -95,6 +95,16 @@ create table if not exists monthly_result (
     saved_at   timestamptz not null default now(),
     primary key (period, channel)
 );
+create table if not exists cost_candidate (
+    code       text not null,
+    cost       numeric not null,
+    source     text,
+    eff_date   date,
+    priority   int not null default 0,
+    row_no     int not null default 0,
+    primary key (code, priority, row_no)
+);
+create index if not exists cost_candidate_code_idx on cost_candidate (code);
 create table if not exists monthly_input (
     period    text not null,
     channel   text not null,
@@ -390,6 +400,40 @@ def load_month_results():
              for k, v in r.items() if k != "saved_at"}
             for r in _rows("select period, channel, sales, cost, fee, card, sample, "
                            "profit, delivery from monthly_result order by period, channel")]
+
+
+def save_candidates(rows):
+    """마진율표의 모든 후보 단가를 보관.
+       rows: [(code, cost, source, eff_date(str|None), priority, row_no), ...]"""
+    with connect() as cn, cn.cursor() as cur:
+        cur.execute("truncate cost_candidate")
+        if rows:
+            cur.executemany(
+                "insert into cost_candidate(code, cost, source, eff_date, priority, row_no) "
+                "values (%s,%s,%s,%s,%s,%s)", rows)
+        cn.commit()
+    return len(rows)
+
+
+def load_lookups_asof(period=None):
+    """기준월까지 기재된 단가만으로 조회표를 만든다.
+       규칙: 앞선 파일(priority 작은 값) 우선 → 같은 파일 안에서는 기재날짜 최신.
+       후보표가 비어 있으면 기존 cost_master 로 물러난다."""
+    if not _rows("select 1 from cost_candidate limit 1"):
+        return load_lookups()
+    cutoff = None
+    if period and len(str(period)) >= 7:
+        y, m = int(str(period)[:4]), int(str(period)[5:7])
+        y2, m2 = (y + 1, 1) if m == 12 else (y, m + 1)
+        cutoff = "{:04d}-{:02d}-01".format(y2, m2)      # 다음 달 1일 미만
+    sql = ("select distinct on (code) code, cost, source from cost_candidate "
+           "{} order by code, priority asc, eff_date desc nulls last, row_no asc")
+    where = "where eff_date is null or eff_date < %s" if cutoff else ""
+    rs = _rows(sql.format(where), (cutoff,) if cutoff else None)
+    cost = {r["code"]: float(r["cost"]) for r in rs}
+    origin = {r["code"]: (r["source"] or "DB") for r in rs}
+    fee = {r["code"]: float(r["fee"]) for r in _rows("select code, fee from fee_master")}
+    return cost, fee, origin
 
 
 def save_month_files(period, files):

@@ -523,7 +523,8 @@ up = st.sidebar.file_uploader("기준 파일 직접 올리기 (선택 · 최우�
                               type=["xlsx", "xlsm"], accept_multiple_files=True,
                               key="up_src")
 up_sig = tuple((f.name, f.size) for f in (up or []))
-cur_sig = tuple((nm, str(s["path"]), s["mtime"], s["size"]) for nm, _p, s in stats) + up_sig
+cur_sig = (period,) + tuple(
+    (nm, str(s["path"]), s["mtime"], s["size"]) for nm, _p, s in stats) + up_sig
 
 loaded = st.session_state.get("lookups")
 stale = loaded is not None and loaded["sig"] != cur_sig
@@ -551,7 +552,7 @@ if loaded is None or do_update:
         if USE_DB and not blobs:
             # 클라우드: 구글드라이브가 없으므로 DB 에 올려둔 기준값을 읽는다
             with st.spinner("기준 원가 불러오는 중..."):
-                d_cost, d_fee, d_origin = db.load_lookups()
+                d_cost, d_fee, d_origin = db.load_lookups_asof(period)
             st.session_state["lookups"] = {
                 "sig": cur_sig, "cost": d_cost, "fee": d_fee, "conflicts": [],
                 "report": [{"label": "Supabase", "format": "DB",
@@ -564,7 +565,7 @@ if loaded is None or do_update:
         elif blobs:
             with st.spinner("기준 파일 읽는 중..."):
                 cost, fee, conflicts, src_report, origin = E.load_lookups(
-                    [(lb, io.BytesIO(b)) for lb, b in blobs])
+                    [(lb, io.BytesIO(b)) for lb, b in blobs], E.month_cutoff(period))
             st.session_state["lookups"] = {
                 "sig": cur_sig, "cost": cost, "fee": fee, "conflicts": conflicts,
                 "report": src_report, "origin": origin, "at": datetime.now(),

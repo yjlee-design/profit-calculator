@@ -76,6 +76,9 @@ def main():
     log("\n[4/5] DB 에 올리는 중...")
     db.replace_lookups(cost, fee, origin)
     log("  기준 원가·요율 저장 완료")
+    cand = E.collect_candidates(resolved)
+    db.save_candidates(cand)
+    log("  후보 단가 {:,}줄 저장 (월별로 그 시점 단가를 다시 고르기 위함)".format(len(cand)))
 
     ov, fov = E.load_overrides(OVERRIDE if OVERRIDE.exists() else None)
     n1 = db.upsert_overrides(ov, note="원가보정.xlsx 동기화")

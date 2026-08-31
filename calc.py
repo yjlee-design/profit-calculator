@@ -173,7 +173,8 @@ def main():
     if not resolved:
         sys.exit("[오류] 읽을 기준 파일이 없습니다. 입력/설정.xlsx [기준파일] 시트를 확인하세요.")
     try:
-        cost, fee, conflicts, report, origin = E.load_lookups(resolved)
+        cost, fee, conflicts, report, origin = E.load_lookups(
+            resolved, E.month_cutoff(period))
     except ValueError as e:
         sys.exit("[오류] " + str(e))
     for r in report:

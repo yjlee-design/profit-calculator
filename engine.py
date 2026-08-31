@@ -317,6 +317,15 @@ _M = {
 _FAR_PAST = (0, 0, 0)
 
 
+def month_cutoff(period):
+    """'2026-07' → (2026, 7, 31) 형태의 상한. 그 달 말일까지만 유효한 단가로 본다."""
+    try:
+        y, m = int(str(period)[:4]), int(str(period)[5:7])
+    except (ValueError, TypeError):
+        return None
+    return (y, m, 31)
+
+
 def _as_date(v):
     """정렬 가능한 날짜 튜플. 날짜가 아니면 아주 과거로 취급."""
     try:
@@ -413,8 +422,10 @@ def is_margin_workbook(wb):
     return any(n in wb.sheetnames for n in MARGIN_MARKER_SHEETS)
 
 
-def load_margin_master(src):
-    """마진율표 형식 → (cost, fee, conflicts, sheet_of_code)"""
+def load_margin_master(src, as_of=None):
+    """마진율표 형식 → (cost, fee, conflicts, sheet_of_code)
+       as_of: (y,m,d) 상한. 이보다 뒤에 기재된 줄은 무시한다
+              (7월 이익률에 8월 단가를 쓰면 안 되므로)."""
     wb = open_wb(src, read_only=True, data_only=True)
     try:
         sheets = [(ws.title, list(ws.iter_rows(values_only=True))) for ws in wb.worksheets]
@@ -443,6 +454,8 @@ def load_margin_master(src):
                 continue
             d_raw = _cell(row, col.get("date"))
             d = _as_date(d_raw)
+            if as_of and d != _FAR_PAST and d > as_of:
+                continue                     # 기준월 이후 기재분은 제외
             nm, op = _cell(row, col.get("name")), _cell(row, col.get("opt"))
             pair = (norm(nm), norm(op)) if nm and op else None
             rec = {"sheet": title, "row": i, "date": d, "date_txt": _date_txt(d_raw),
@@ -564,7 +577,39 @@ def expand_sources(entries, base, years=DEFAULT_YEARS):
     return out, notes
 
 
-def load_lookups(sources):
+def collect_candidates(sources):
+    """모든 기준 파일에서 후보 단가를 전부 뽑는다 (DB 보관 → 월별 재계산용).
+       반환: [(코드, 단가, 출처, 기재날짜 'YYYY-MM-DD' 또는 None, 파일순번, 줄번호)]"""
+    from pathlib import Path as _P
+    out = []
+    for prio, (label, src) in enumerate(sources):
+        wb = open_wb(src, read_only=True, data_only=True)
+        try:
+            if not is_margin_workbook(wb):
+                continue
+            sheets = [(ws.title, list(ws.iter_rows(values_only=True))) for ws in wb.worksheets]
+        finally:
+            wb.close()
+        n = 0
+        for title, rows in sheets:
+            start, col = locate_columns(rows)
+            if "cost" not in col or "code" not in col:
+                continue
+            for row in rows[start:]:
+                k = code_key(_cell(row, col["code"]))
+                raw = _cell(row, col["cost"])
+                if not k or raw is None or (isinstance(raw, str) and str(raw).strip().startswith("#")):
+                    continue
+                v = num(raw)
+                if v <= 0:
+                    continue
+                d = _date_txt(_cell(row, col.get("date"))) or None
+                out.append((k, v, "{}·{}".format(label, title), d, prio, n))
+                n += 1
+    return out
+
+
+def load_lookups(sources, as_of=None):
     """여러 기준 파일을 순서대로 읽어 합친다 (앞선 파일이 우선).
        sources: [(라벨, 경로 또는 파일객체), ...]
        반환: (cost, fee, conflicts, report, origin)
@@ -576,7 +621,8 @@ def load_lookups(sources):
         wb = open_wb(src, read_only=True, data_only=True)
         margin = is_margin_workbook(wb)
         wb.close()
-        c, f, cf, sheet_of = load_margin_master(src) if margin else load_master(src)
+        c, f, cf, sheet_of = (load_margin_master(src, as_of) if margin
+                              else load_master(src))
         added_c = sum(1 for k in c if k not in cost)
         added_f = sum(1 for k in f if k not in fee)
         for k, v in c.items():

@@ -520,18 +520,6 @@ def go(view):
 
 st.sidebar.title("📊 이익률 계산기")
 
-# ---- 왼쪽 상단 메뉴
-if "_nav_pending" in st.session_state:
-    st.session_state["nav_menu"] = st.session_state.pop("_nav_pending")
-if "nav_menu" not in st.session_state:
-    st.session_state["nav_menu"] = NAV_REV.get(st.session_state.get("view", "input"),
-                                               "데이터 입력")
-_pick = st.sidebar.radio("메뉴", list(NAV), key="nav_menu", label_visibility="collapsed")
-st.session_state["view"] = NAV[_pick]
-if NAV[_pick] == "result" and not st.session_state.get("out"):
-    st.sidebar.caption("아직 계산 결과가 없습니다. **데이터 입력** 에서 계산하세요.")
-st.sidebar.divider()
-
 defaults_key = CONFIG.stat().st_mtime if CONFIG.exists() else 0
 def_sources, def_years, def_channels, def_cards_all, def_samples_all, def_period = read_config_defaults(defaults_key)
 
@@ -568,6 +556,21 @@ _mm = _c2.selectbox("월", list(range(1, 13)), key="period_month",
 period = "{:04d}-{:02d}".format(_yy, _mm)
 st.sidebar.caption("결과 파일 이름이 됩니다 → `{} 이익률.xlsx`".format(period))
 
+st.sidebar.divider()
+
+# ---- 왼쪽 상단 메뉴
+if "_nav_pending" in st.session_state:
+    st.session_state["nav_menu"] = st.session_state.pop("_nav_pending")
+if "nav_menu" not in st.session_state:
+    st.session_state["nav_menu"] = NAV_REV.get(st.session_state.get("view", "input"),
+                                               "데이터 입력")
+_pick = st.sidebar.radio("메뉴", list(NAV), key="nav_menu", label_visibility="collapsed")
+st.session_state["view"] = NAV[_pick]
+if NAV[_pick] == "result" and not st.session_state.get("out"):
+    st.sidebar.caption("아직 계산 결과가 없습니다. **데이터 입력** 에서 계산하세요.")
+st.sidebar.divider()
+
+
 # 기준월에 해당하는 값 (없으면 가장 최근 달의 결제수단 구성을 금액 0으로 가져옴)
 _extra = st.session_state.get("extra_cards", [])
 if period in def_cards_all:
@@ -583,91 +586,101 @@ for m in _extra:
         def_cards.append((m, 0.0, 0.0275))
 def_samples_by_month = dict(def_samples_all)
 
-st.sidebar.divider()
-st.sidebar.subheader("기준 파일")
-
-# 파일 상태만 먼저 확인 (실제 읽기는 [업데이트] 를 누르거나 처음 켤 때만)
+# ---------------------------------------------------------------- 기준 파일
+# UI 는 '데이터 입력' 화면 위쪽에 그리고, 조회표 적재는 어느 화면에서든 돌아야 한다.
 if USE_DB:
     _expanded, _src_notes, stats = [], [], []
 else:
     _expanded, _src_notes = E.expand_sources(def_sources, BASE, def_years)
     stats = [(nm, str(f), stat_source(f)) for nm, f in _expanded]
 
-up = st.sidebar.file_uploader("기준 파일 직접 올리기 (선택 · 최우선 적용)",
-                              type=["xlsx", "xlsm"], accept_multiple_files=True,
-                              key="up_src")
-up_sig = tuple((f.name, f.size) for f in (up or []))
-cur_sig = (period,) + tuple(
-    (nm, str(s["path"]), s["mtime"], s["size"]) for nm, _p, s in stats) + up_sig
 
-loaded = st.session_state.get("lookups")
-stale = loaded is not None and loaded["sig"] != cur_sig
+def source_sig(uploaded=None):
+    return ((period,)
+            + tuple((nm, str(s["path"]), s["mtime"], s["size"]) for nm, _p, s in stats)
+            + tuple((f.name, f.size) for f in (uploaded or [])))
 
-c1, c2 = st.sidebar.columns([1, 1])
-do_update = c1.button("🔄 업데이트", width="stretch",
-                      help="기준 파일을 지금 다시 읽습니다")
-if c2.button("상태 새로고침", width="stretch", help="파일이 바뀌었는지만 다시 확인"):
-    st.rerun()
 
-if stale and not do_update:
-    st.sidebar.warning("기준 파일이 바뀌었습니다. **🔄 업데이트** 를 눌러 반영하세요.")
-
-if loaded is None or do_update:
-    blobs = []
-    for f in (up or []):
-        blobs.append(("업로드:" + f.name, f.getvalue()))
+def load_sources(uploaded=None, box=None):
+    """기준 원가·요율을 읽어 세션에 담는다. box 가 있으면 오류를 거기 표시."""
+    err = (box or st).error
+    blobs = [("업로드:" + f.name, f.getvalue()) for f in (uploaded or [])]
     for nm, _p, s in stats:
         if s["ok"]:
             try:
                 blobs.append((nm, s["path"].read_bytes()))
             except OSError as e:
-                st.sidebar.error("{} — 읽기 실패 ({})".format(nm, e))
+                err("{} — 읽기 실패 ({})".format(nm, e))
     try:
         if USE_DB and not blobs:
-            # 클라우드: 구글드라이브가 없으므로 DB 에 올려둔 기준값을 읽는다
             with st.spinner("기준 원가 불러오는 중..."):
                 d_cost, d_fee, d_origin = db.load_lookups_asof(period)
             st.session_state["lookups"] = {
-                "sig": cur_sig, "cost": d_cost, "fee": d_fee, "conflicts": [],
-                "report": [{"label": "Supabase", "format": "DB",
-                            "cost": len(d_cost), "fee": len(d_fee),
-                            "cost_new": len(d_cost), "fee_new": len(d_fee)}],
-                "origin": d_origin, "at": datetime.now(),
-            }
-            loaded = st.session_state["lookups"]
-            stale = False
+                "sig": source_sig(uploaded), "cost": d_cost, "fee": d_fee, "conflicts": [],
+                "report": [{"label": "Supabase", "format": "DB", "cost": len(d_cost),
+                            "fee": len(d_fee), "cost_new": len(d_cost), "fee_new": len(d_fee)}],
+                "origin": d_origin, "at": datetime.now()}
         elif blobs:
             with st.spinner("기준 파일 읽는 중..."):
-                cost, fee, conflicts, src_report, origin = E.load_lookups(
+                c, f, cf, rep, org = E.load_lookups(
                     [(lb, io.BytesIO(b)) for lb, b in blobs], E.month_cutoff(period))
             st.session_state["lookups"] = {
-                "sig": cur_sig, "cost": cost, "fee": fee, "conflicts": conflicts,
-                "report": src_report, "origin": origin, "at": datetime.now(),
-            }
-            loaded = st.session_state["lookups"]
-            stale = False
+                "sig": source_sig(uploaded), "cost": c, "fee": f, "conflicts": cf,
+                "report": rep, "origin": org, "at": datetime.now()}
     except Exception as e:
-        st.sidebar.error(str(e))
+        err(str(e))
 
+
+# 아직 한 번도 안 읽었으면 어느 화면이든 먼저 읽어둔다
+if st.session_state.get("lookups") is None:
+    load_sources()
+
+loaded = st.session_state.get("lookups")
 cost = fee = conflicts = src_report = origin = None
 if loaded:
     cost, fee = loaded["cost"], loaded["fee"]
     conflicts, src_report, origin = loaded["conflicts"], loaded["report"], loaded["origin"]
 
-for nm, p, s in stats:
-    if s["ok"]:
-        st.sidebar.caption("**{}** · 파일 수정 {}".format(nm, when(s["mtime"])))
-    else:
-        st.sidebar.error("{} — {}\n\n`{}`".format(nm, s["why"], p))
 
-if src_report:
-    for r in src_report:
-        st.sidebar.caption("· {} — 원가 {:,} (신규 {:,}) · 요율 {:,}".format(
-            r["label"], r["cost"], r["cost_new"], r["fee"]))
-    st.sidebar.success("합계 원가 {:,}건 · 셀러수수료 {:,}건".format(len(cost), len(fee)))
-    st.sidebar.caption("읽은 시각 {}".format(loaded["at"].strftime("%m-%d %H:%M:%S")))
-elif not any(s["ok"] for _n, _p, s in stats) and not up:
-    st.sidebar.error("읽을 기준 파일이 없습니다. 입력/설정.xlsx [기준파일] 시트를 확인하세요.")
+def render_source_panel():
+    """데이터 입력 화면 위쪽에 그리는 기준 파일 패널"""
+    global cost, fee, conflicts, src_report, origin, loaded
+    with st.expander("📁 기준 파일 — 원가·셀러수수료를 어디서 읽는지", expanded=False):
+        c1, c2 = st.columns([3, 2])
+        with c1:
+            up_ = st.file_uploader("기준 파일 직접 올리기 (선택 · 최우선 적용)",
+                                   type=["xlsx", "xlsm"], accept_multiple_files=True,
+                                   key="up_src")
+            for nm, p, s in stats:
+                if s["ok"]:
+                    st.caption("**{}** · 파일 수정 {}".format(nm, when(s["mtime"])))
+                else:
+                    st.error("{} — {}  ({})".format(nm, s["why"], p))
+            for _n in _src_notes:
+                if "없" in _n or "못" in _n:
+                    st.error(_n)
+        with c2:
+            b1, b2 = st.columns(2)
+            do_up = b1.button("🔄 업데이트", width="stretch",
+                              help="기준 파일을 지금 다시 읽습니다")
+            if b2.button("상태 새로고침", width="stretch",
+                         help="파일이 바뀌었는지만 확인"):
+                st.rerun()
+            cur = st.session_state.get("lookups")
+            if cur is not None and cur["sig"] != source_sig(up_) and not do_up:
+                st.warning("기준 파일이 바뀌었습니다. **🔄 업데이트** 를 눌러 반영하세요.")
+            if do_up:
+                load_sources(up_)
+                st.rerun()
+            if src_report:
+                for r in src_report:
+                    st.caption("· {} — 원가 {:,} (신규 {:,}) · 요율 {:,}".format(
+                        r["label"], r["cost"], r["cost_new"], r["fee"]))
+                st.success("합계 원가 {:,}건 · 셀러수수료 {:,}건".format(len(cost), len(fee)))
+                st.caption("읽은 시각 {}".format(cur["at"].strftime("%m-%d %H:%M:%S")))
+            elif not stats and not USE_DB:
+                st.error("읽을 기준 파일이 없습니다. 입력/설정.xlsx [기준파일] 시트를 확인하세요.")
+
 
 st.sidebar.divider()
 ov_bytes, ov_tag = None, ""
@@ -812,6 +825,8 @@ else:
 if VIEW == "input":
     st.caption("이카운트 매출 파일을 올리면 채널별 이익률을 계산합니다. "
                "배송비는 매출=원가로 처리하여 이익에서 제외됩니다.")
+
+    render_source_panel()
 
     # ---- 채널 설정 (업로더보다 먼저 정의해야 하므로 위에 두되, 접어 둔다)
     with st.expander("⚙️ 채널 설정  —  채널을 추가하거나 비용 차감 대상을 바꿀 때만"):

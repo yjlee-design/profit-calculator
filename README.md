@@ -52,3 +52,8 @@ Streamlit Cloud 에 올릴 때는 앱 설정의 **Secrets** 칸에 `secrets.toml
 | `theme.css` | 화면 디자인 |
 
 자세한 사용법은 `사용설명서.md` 를 보세요.
+
+## 접속
+
+배포된 앱은 비밀번호를 입력해야 화면이 보입니다.
+접속 정보(Supabase 주소·비밀번호)는 저장소에 없고, 실행 환경의 Secrets 에만 있습니다.

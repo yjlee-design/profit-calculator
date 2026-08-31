@@ -105,6 +105,13 @@ create table if not exists cost_candidate (
     primary key (code, priority, row_no)
 );
 create index if not exists cost_candidate_code_idx on cost_candidate (code);
+create table if not exists monthly_report (
+    period    text primary key,
+    filename  text not null,
+    content   bytea not null,
+    summary   text,
+    saved_at  timestamptz not null default now()
+);
 create table if not exists monthly_input (
     period    text not null,
     channel   text not null,
@@ -434,6 +441,35 @@ def load_lookups_asof(period=None):
     origin = {r["code"]: (r["source"] or "DB") for r in rs}
     fee = {r["code"]: float(r["fee"]) for r in _rows("select code, fee from fee_master")}
     return cost, fee, origin
+
+
+def save_month_report(period, filename, content, summary=""):
+    """그 달의 결과 엑셀을 통째로 보관 — 나중에 다시 계산하지 않고 내려받을 수 있게"""
+    with connect() as cn, cn.cursor() as cur:
+        cur.execute(
+            "insert into monthly_report(period, filename, content, summary) "
+            "values (%s,%s,%s,%s) on conflict (period) do update set "
+            "filename = excluded.filename, content = excluded.content, "
+            "summary = excluded.summary, saved_at = now()",
+            (period, filename, content, summary))
+        cn.commit()
+
+
+def load_month_report(period):
+    """(파일명, bytes, 요약, 저장시각) 또는 None"""
+    r = _rows("select filename, content, summary, saved_at from monthly_report "
+              "where period = %s", (period,))
+    if not r:
+        return None
+    r = r[0]
+    return (r["filename"], bytes(r["content"]), r["summary"] or "", r["saved_at"])
+
+
+def list_month_reports():
+    """[(기준월, 파일명, 요약, 저장시각), ...] 최신월 순"""
+    return [(r["period"], r["filename"], r["summary"] or "", r["saved_at"])
+            for r in _rows("select period, filename, summary, saved_at "
+                           "from monthly_report order by period desc")]
 
 
 def save_month_files(period, files):

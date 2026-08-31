@@ -326,6 +326,56 @@ def append_overrides(typed, names):
     return n
 
 
+def save_report(period, xlsx, summary=""):
+    """그 달의 결과 엑셀을 보관"""
+    fname = "{} 이익률.xlsx".format(period)
+    if db.enabled():
+        try:
+            db.save_month_report(period, fname, xlsx, summary)
+            return
+        except Exception:
+            pass
+    try:
+        OUT_DIR.mkdir(exist_ok=True)
+        (OUT_DIR / fname).write_bytes(xlsx)
+    except OSError:
+        pass
+
+
+def load_report(period):
+    """(파일명, bytes, 요약, 저장시각) 또는 None"""
+    if db.enabled():
+        try:
+            got = db.load_month_report(period)
+            if got:
+                return got
+        except Exception:
+            pass
+    f = OUT_DIR / "{} 이익률.xlsx".format(period)
+    if f.exists():
+        import datetime as _dt
+        return (f.name, f.read_bytes(), "",
+                _dt.datetime.fromtimestamp(f.stat().st_mtime))
+    return None
+
+
+def list_reports():
+    if db.enabled():
+        try:
+            return db.list_month_reports()
+        except Exception:
+            pass
+    import datetime as _dt, re as _re
+    out = []
+    if OUT_DIR.is_dir():
+        for f in sorted(OUT_DIR.glob("* 이익률.xlsx"), reverse=True):
+            m = _re.match(r"(\d{4}-\d{2})", f.name)
+            if m:
+                out.append((m.group(1), f.name, "",
+                            _dt.datetime.fromtimestamp(f.stat().st_mtime)))
+    return out
+
+
 INPUT_DIR_SAVE = BASE / "결과" / "입력보관"
 
 
@@ -456,7 +506,31 @@ def when(ts):
 
 
 # ---------------------------------------------------------------- 사이드바
+NAV = {"데이터 입력": "input", "결과": "result"}
+NAV_REV = {v: k for k, v in NAV.items()}
+
+
+def go(view):
+    """메뉴와 화면을 함께 바꾼다.
+       라디오는 이미 그려진 뒤라 직접 못 고치므로, 다음 실행에 반영되도록 예약한다.
+       호출한 쪽에서 st.rerun() 을 해야 한다."""
+    st.session_state["view"] = view
+    st.session_state["_nav_pending"] = NAV_REV[view]
+
+
 st.sidebar.title("📊 이익률 계산기")
+
+# ---- 왼쪽 상단 메뉴
+if "_nav_pending" in st.session_state:
+    st.session_state["nav_menu"] = st.session_state.pop("_nav_pending")
+if "nav_menu" not in st.session_state:
+    st.session_state["nav_menu"] = NAV_REV.get(st.session_state.get("view", "input"),
+                                               "데이터 입력")
+_pick = st.sidebar.radio("메뉴", list(NAV), key="nav_menu", label_visibility="collapsed")
+st.session_state["view"] = NAV[_pick]
+if NAV[_pick] == "result" and not st.session_state.get("out"):
+    st.sidebar.caption("아직 계산 결과가 없습니다. **데이터 입력** 에서 계산하세요.")
+st.sidebar.divider()
 
 defaults_key = CONFIG.stat().st_mtime if CONFIG.exists() else 0
 def_sources, def_years, def_channels, def_cards_all, def_samples_all, def_period = read_config_defaults(defaults_key)
@@ -683,6 +757,9 @@ def run_calc(snap=None):
     }
     save_history(snap["period"], results, total)     # 월별 추이 그래프용 이력
     save_month_files(snap["period"], snap["files"])   # 다음에 열어도 결과가 보이도록
+    save_report(snap["period"], buf.getvalue(),       # 결과 엑셀도 달마다 보관
+                "매출 {:,.0f} / 이익 {:,.0f} / {:.2f}%".format(
+                    total["gross"], total["profit"], total["margin"] * 100))
     return True, errs
 
 
@@ -709,25 +786,26 @@ if not st.session_state.get("out") and not st.session_state.get("restore_done"):
             _ok, _ = run_calc(_snap)
         if _ok:
             st.session_state["calc_snapshot"] = _snap
-            st.session_state["view"] = "result"
             st.session_state["restored_from_save"] = True
+            go("result")
+            st.rerun()
 
 VIEW = st.session_state.setdefault("view", "input")
 
 if VIEW == "result" and not st.session_state.get("out"):
-    VIEW = st.session_state["view"] = "input"      # 결과가 없으면 입력 화면
+    st.session_state["view"] = VIEW = "input"       # 결과가 없으면 입력 화면
 
 if VIEW == "result":
     _o = st.session_state["out"]
     _c1, _c2 = st.columns([3, 1])
     _c1.title("{} 이익률 결과".format(_o["period"]))
     _c2.write("")
-    if _c2.button("← 입력 화면으로", width="stretch"):
-        st.session_state["view"] = "input"
+    if _c2.button("← 데이터 입력으로", width="stretch"):
+        go("input")
         st.rerun()
     if st.session_state.pop("restored_from_save", False):
         st.info("저장해 둔 **{}** 자료로 다시 계산했습니다. "
-                "새 자료로 바꾸려면 **← 입력 화면으로** 가서 파일을 다시 올리세요."
+                "새 자료로 바꾸려면 왼쪽 메뉴의 **데이터 입력** 으로 가서 파일을 다시 올리세요."
                 .format(_o["period"]))
 else:
     st.title("이익률 계산")
@@ -985,7 +1063,7 @@ if VIEW == "input":
         st.session_state["calc_snapshot"] = snap
         ok, errs = run_calc(snap)
         if ok:
-            st.session_state["view"] = "result"          # 결과 화면으로 이동
+            go("result")                                 # 결과 화면으로 이동
             st.rerun()
         else:
             st.error("계산할 파일이 없습니다. 아래 사유를 확인하세요.")
@@ -1007,8 +1085,23 @@ if VIEW == "input":
     if st.session_state.get("out"):
         st.caption("")
         if st.button("↩ 지난 계산 결과 다시 보기", width="stretch"):
-            st.session_state["view"] = "result"
+            go("result")
             st.rerun()
+
+    _saved_in = list_reports()
+    if _saved_in:
+        with st.expander("월별 보관함 — 지난 달 결과 내려받기 ({}개월)".format(len(_saved_in))):
+            for _p, _fn, _sm, _at in _saved_in:
+                _c = st.columns([1.2, 3.4, 1.4])
+                _c[0].markdown("**{}**".format(_p))
+                _c[1].markdown("<span style='color:#64748B;font-size:.82rem'>{}</span>"
+                               .format(_sm or "-"), unsafe_allow_html=True)
+                _got = load_report(_p)
+                if _got:
+                    _c[2].download_button("내려받기", data=_got[1], file_name=_got[0],
+                                          mime="application/vnd.openxmlformats-officedocument."
+                                               "spreadsheetml.sheet",
+                                          key="dli_%s" % _p, width="stretch")
 
 # ---------------------------------------------------------------- 결과
 out = st.session_state.get("out")
@@ -1079,6 +1172,26 @@ if out:
         file_name="{} 이익률.xlsx".format(out["period"]),
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary", width="stretch")
+
+    _saved = list_reports()
+    if _saved:
+        with st.expander("월별 보관함 — 지난 달 결과 내려받기 ({}개월)".format(len(_saved))):
+            st.caption("계산할 때마다 그 달의 결과 엑셀이 자동으로 보관됩니다. "
+                       "다른 PC에서 접속해도 같은 목록이 보입니다.")
+            for _p, _fn, _sm, _at in _saved:
+                _c = st.columns([1.2, 3, 1.6, 1.4])
+                _c[0].markdown("**{}**".format(_p))
+                _c[1].markdown("<span style='color:#64748B;font-size:.82rem'>{}</span>"
+                               .format(_sm or "-"), unsafe_allow_html=True)
+                _c[2].markdown("<span style='color:#94A3B8;font-size:.78rem'>{}</span>"
+                               .format(_at.strftime("%Y-%m-%d %H:%M") if _at else ""),
+                               unsafe_allow_html=True)
+                _got = load_report(_p)
+                if _got:
+                    _c[3].download_button("내려받기", data=_got[1], file_name=_got[0],
+                                          mime="application/vnd.openxmlformats-officedocument."
+                                               "spreadsheetml.sheet",
+                                          key="dl_%s" % _p, width="stretch")
 
     summary = pd.DataFrame([{
         "구분": r["ch"]["name"], "상품매출": r["sales"], "상품원가": r["cost"],

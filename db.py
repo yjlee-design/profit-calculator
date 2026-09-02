@@ -10,6 +10,7 @@ DB 가 없으면 모든 함수가 조용히 비활성화되고, 앱은 기존처
 
 표 구성
   cost_master     상품코드 → 원가        (마진율표에서 동기화)
+  name_index      상품명+옵션명 → 코드   (샘플비용 자동계산용)
   fee_master      상품코드 → 셀러수수료율 (마진율표에서 동기화)
   cost_override   수동 보정 원가
   fee_override    수동 보정 요율
@@ -41,6 +42,14 @@ create table if not exists fee_master (
     fee        numeric not null,
     source     text,
     updated_at timestamptz not null default now()
+);
+create table if not exists name_index (
+    kind       text not null,          -- 'exact' 정확 · 'core' 세트/낱개 표기 정리
+    item_name  text not null,
+    opt_name   text not null,
+    code       text not null,
+    set_count  integer not null default 1,
+    primary key (kind, item_name, opt_name)
 );
 create table if not exists cost_override (
     code       text primary key,
@@ -301,6 +310,39 @@ def replace_lookups(cost, fee, origin=None):
                 "insert into fee_master(code, fee, source) values (%s, %s, %s)",
                 [(k, v, origin.get(k)) for k, v in fee.items()])
         cn.commit()
+
+
+def replace_name_index(names):
+    """상품명+옵션명 → 코드 색인을 통째로 갈아끼운다 (동기화용)."""
+    rows = []
+    for k, code in (names.get("exact") or {}).items():
+        rows.append(("exact", k[0], k[1], code, 1))
+    for k, (code, setn) in (names.get("core") or {}).items():
+        rows.append(("core", k[0], k[1], code, int(setn or 1)))
+    with connect() as cn, cn.cursor() as cur:
+        cur.execute("truncate name_index")
+        if rows:
+            cur.executemany(
+                "insert into name_index(kind, item_name, opt_name, code, set_count) "
+                "values (%s, %s, %s, %s, %s) on conflict do nothing", rows)
+        cn.commit()
+    return len(rows)
+
+
+def load_name_index():
+    """DB → {'exact': {(상품명, 옵션명): 코드}, 'core': {(상품명, 핵심옵션): (코드, 세트수)}}"""
+    out = {"exact": {}, "core": {}}
+    try:
+        rows = _rows("select kind, item_name, opt_name, code, set_count from name_index")
+    except Exception:
+        return out
+    for r in rows:
+        k = (r["item_name"], r["opt_name"])
+        if r["kind"] == "core":
+            out["core"][k] = (r["code"], int(r["set_count"] or 1))
+        else:
+            out["exact"][k] = r["code"]
+    return out
 
 
 def upsert_overrides(cost_ov, names=None, note=None):

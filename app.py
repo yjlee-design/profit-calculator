@@ -615,18 +615,19 @@ def load_sources(uploaded=None, box=None):
         if USE_DB and not blobs:
             with st.spinner("기준 원가 불러오는 중..."):
                 d_cost, d_fee, d_origin = db.load_lookups_asof(period)
+                d_names = db.load_name_index()
             st.session_state["lookups"] = {
                 "sig": source_sig(uploaded), "cost": d_cost, "fee": d_fee, "conflicts": [],
                 "report": [{"label": "Supabase", "format": "DB", "cost": len(d_cost),
                             "fee": len(d_fee), "cost_new": len(d_cost), "fee_new": len(d_fee)}],
-                "origin": d_origin, "at": datetime.now()}
+                "origin": d_origin, "names": d_names, "at": datetime.now()}
         elif blobs:
             with st.spinner("기준 파일 읽는 중..."):
-                c, f, cf, rep, org = E.load_lookups(
+                c, f, cf, rep, org, nx = E.load_lookups(
                     [(lb, io.BytesIO(b)) for lb, b in blobs], E.month_cutoff(period))
             st.session_state["lookups"] = {
                 "sig": source_sig(uploaded), "cost": c, "fee": f, "conflicts": cf,
-                "report": rep, "origin": org, "at": datetime.now()}
+                "report": rep, "origin": org, "names": nx, "at": datetime.now()}
     except Exception as e:
         err(str(e))
 
@@ -637,14 +638,16 @@ if st.session_state.get("lookups") is None:
 
 loaded = st.session_state.get("lookups")
 cost = fee = conflicts = src_report = origin = None
+names = {"exact": {}, "core": {}}
 if loaded:
     cost, fee = loaded["cost"], loaded["fee"]
     conflicts, src_report, origin = loaded["conflicts"], loaded["report"], loaded["origin"]
+    names = loaded.get("names") or {"exact": {}, "core": {}}
 
 
 def render_source_panel():
     """데이터 입력 화면 위쪽에 그리는 기준 파일 패널"""
-    global cost, fee, conflicts, src_report, origin, loaded
+    global cost, fee, conflicts, src_report, origin, loaded, names
     with st.expander("📁 기준 파일 — 원가·셀러수수료를 어디서 읽는지", expanded=False):
         c1, c2 = st.columns([3, 2])
         with c1:
@@ -795,6 +798,17 @@ if not st.session_state.get("out") and not st.session_state.get("restore_done"):
         _snap["cards"], _snap["card_total"] = E.card_rows_total(_c)
         _sm = float(def_samples_by_month.get(period, 0.0))
         _snap["sample_items"], _snap["sample"] = [("자체샘플+이벤트지원", _sm)], _sm
+        _sf = load_month_files(period + "#샘플").get("샘플")
+        if _sf and _sf[1] and cost:
+            try:
+                _sr, _ = E.read_samples(io.BytesIO(_sf[1]))
+                _sa = E.match_samples(_sr, period, names, cost)
+                _sh = float(st.session_state.get("smpship_%s" % period, _sa["ship"]))
+                _snap["sample_items"] = [("샘플 상품원가(자체부담)", _sa["goods"]),
+                                         ("샘플 배송비", _sh)]
+                _snap["sample"] = _sa["goods"] + _sh
+            except Exception:
+                pass
         with st.spinner("{} 저장된 결과 불러오는 중...".format(period)):
             _ok, _ = run_calc(_snap)
         if _ok:
@@ -860,12 +874,43 @@ if VIEW == "input":
     st.caption("채널별로 다운로드한 파일을 올려주세요. 필요한 열: "
                "`품목명[규격]코드` · `수량` · `판매액`  "
                "(`품목그룹3코드` 가 있으면 배송비를 자동 분리합니다)")
+    st.caption("올린 파일은 **그 달에 자동으로 보관**됩니다. 새로고침하거나 나갔다 들어와도 그대로 남습니다.")
+    kept = load_month_files(period)                  # 그 달에 보관해 둔 파일
     uploads = {}
+    fresh = {}
     cols = st.columns(min(len(channels), 4) or 1)
     for i, ch in enumerate(channels):
         with cols[i % len(cols)]:
-            uploads[ch["name"]] = st.file_uploader(
-                ch["name"], type=["xlsx", "xlsm", "csv"], key="up_" + ch["name"])
+            up = st.file_uploader(ch["name"], type=["xlsx", "xlsm", "csv"],
+                                  key="up_%s_%s" % (period, ch["name"]))
+            uploads[ch["name"]] = up
+            if up is not None:
+                fresh[ch["name"]] = (up.name, up.getvalue())
+            elif kept.get(ch["name"]) and kept[ch["name"]][1]:
+                _fn = kept[ch["name"]][0]
+                st.caption("✅ 보관됨 — **{}**".format(_fn))
+                if st.button("지우기", key="delfile_%s_%s" % (period, ch["name"])):
+                    _rest = {k: v for k, v in kept.items() if k != ch["name"]}
+                    save_month_files(period, _rest or {"__없음__": ("", b"")})
+                    st.rerun()
+            else:
+                st.caption("아직 없음")
+
+    # 새로 올린 파일은 즉시 그 달에 보관 (계산을 누르지 않아도 남는다)
+    if fresh:
+        _sig = tuple(sorted((k, v[0], len(v[1])) for k, v in fresh.items()))
+        if st.session_state.get("kept_sig_%s" % period) != _sig:
+            merged = {k: v for k, v in kept.items() if v[1] and k != "__없음__"}
+            merged.update(fresh)
+            save_month_files(period, merged)
+            st.session_state["kept_sig_%s" % period] = _sig
+            kept = merged
+
+    have = [ch["name"] for ch in channels
+            if uploads.get(ch["name"]) is not None
+            or (kept.get(ch["name"]) and kept[ch["name"]][1])]
+    if have:
+        st.success("{} 에 파일 {}개 — {}".format(period, len(have), " · ".join(have)))
 
     st.divider()
 
@@ -986,8 +1031,9 @@ if VIEW == "input":
         st.divider()
 
         st.subheader("샘플비용  ·  {}".format(period))
-        st.caption("월을 눌러 옮겨 다니며 입력하세요. **기준월({})** 의 금액이 이번 계산에 차감됩니다. "
-                   "지난 달 값은 그대로 쌓입니다.".format(period))
+        st.caption("샘플 리스트 엑셀을 올리면 **날짜로 그 달만 골라** '자체부담' 줄의 원가를 "
+                   "기준 파일에서 찾아 자동 계산합니다. 배송비는 따로 입력합니다. "
+                   "**기준월({})** 의 금액이 이번 계산에 차감됩니다.".format(period))
 
         # 월 이동 버튼 (카드수수료와 동일 — 기준월이 함께 바뀝니다)
         srow = st.columns(12)
@@ -1001,34 +1047,141 @@ if VIEW == "input":
                 st.rerun()
         st.write("")
 
-        # 선택한 달만 입력
+        # ---- 샘플 리스트 엑셀 → 자동 계산
+        smp_key = period + "#샘플"
+        up_smp = st.file_uploader(
+            "샘플 발주/지원 리스트 올리기 (선택)", type=["xlsx", "xlsm"],
+            key="up_smp_%s" % period,
+            help="첫 시트에 날짜·구분·상품명·옵션명이 있는 파일. "
+                 "**구분이 '자체부담'인 줄만** 원가에 반영하고, 날짜로 기준월을 가릅니다.")
+        smp_blob = None
+        if up_smp is not None:
+            smp_blob = (up_smp.name, up_smp.getvalue())
+            if st.session_state.get("smpfile_saved") != (smp_key, up_smp.name, up_smp.size):
+                save_month_files(smp_key, {"샘플": smp_blob})
+                st.session_state["smpfile_saved"] = (smp_key, up_smp.name, up_smp.size)
+        else:
+            _got = load_month_files(smp_key)
+            if _got.get("샘플") and _got["샘플"][1]:
+                smp_blob = _got["샘플"]
+
+        auto = None
+        if smp_blob:
+            if not cost:
+                st.warning("기준 원가를 먼저 읽어야 샘플 원가를 찾을 수 있습니다.")
+            else:
+                try:
+                    _srows, _ssheet = E.read_samples(io.BytesIO(smp_blob[1]))
+                    auto = E.match_samples(_srows, period, names, cost)
+                except Exception as e:
+                    st.error("샘플 파일을 읽지 못했습니다 — {}".format(e))
+
+        if auto is not None:
+            n_ok, n_no = len(auto["items"]), len(auto["missing"])
+            st.caption("**{}** · 첫 시트 `{}` · 전체 {:,}줄".format(
+                smp_blob[0], _ssheet, len(_srows)))
+            if n_ok + n_no == 0:
+                st.warning("이 파일에 **{}** 의 '자체부담' 줄이 없습니다. "
+                           "위에서 다른 달을 골라 보세요.".format(period))
+            _m1, _m2, _m3 = st.columns(3)
+            _m1.metric("자체부담 상품원가", WON.format(auto["goods"]) + " 원",
+                       help="기준 파일(마진율표)의 최신 원가 x 수량")
+            _m2.metric("파일의 배송비 합계", WON.format(auto["ship"]) + " 원")
+            _m3.metric("원가 매칭", "{} / {} 건".format(n_ok, n_ok + n_no),
+                       help="상품명+옵션명으로 기준 파일에서 찾은 건수")
+            if n_no:
+                st.warning("**{}건**은 기준 파일에서 원가를 찾지 못했습니다. "
+                           "아래 목록을 확인하세요.".format(n_no))
+                with st.expander("원가를 못 찾은 {}건 보기".format(n_no)):
+                    st.dataframe(pd.DataFrame(
+                        [{"상품명": m["name"], "옵션명": m["opt"], "수량": m["qty"],
+                          "파일에 적힌 단가": m["price"]} for m in auto["missing"]]),
+                        width="stretch", hide_index=True)
+                    st.caption("상품명·옵션명이 기준 파일과 다르면 못 찾습니다. "
+                               "기준 파일에 등록하거나, 아래 금액을 직접 고쳐 넣으세요.")
+            with st.expander("이 파일이 담고 있는 달 · 매칭 내역"):
+                st.dataframe(pd.DataFrame(
+                    [{"월": mm, "자체부담 줄수": v["rows"], "상품원가": v["goods"],
+                      "배송비": v["ship"], "못 찾음": v["miss"],
+                      "": "◀ 기준월" if mm == period else ""}
+                     for mm, v in sorted(auto["months"].items())]),
+                    width="stretch", hide_index=True,
+                    column_config={"상품원가": st.column_config.NumberColumn(format="%d"),
+                                   "배송비": st.column_config.NumberColumn(format="%d")})
+                if auto["items"]:
+                    st.dataframe(pd.DataFrame(
+                        [{"상품명": i["name"], "옵션명": i["opt"], "수량": i["qty"],
+                          "낱개원가": round(i["unit"]), "금액": round(i["amount"]),
+                          "찾은 방법": i["how"], "상품코드": i["code"]}
+                         for i in auto["items"]]),
+                        width="stretch", hide_index=True,
+                        column_config={"낱개원가": st.column_config.NumberColumn(format="%d"),
+                                       "금액": st.column_config.NumberColumn(format="%d")})
+                    st.caption("‘세트÷N’ 은 기준 파일이 세트 단가라서 낱개로 나눈 것입니다. "
+                               "(예: [7호-나시-단품] ↔ 기준 [7호-나시-3개1세트])")
+            if st.button("이 파일 지우고 직접 입력하기", key="smp_clear_%s" % period):
+                save_month_files(smp_key, {"샘플": ("", b"")})
+                st.session_state.pop("smpfile_saved", None)
+                st.rerun()
+
+        st.write("")
+
+        # ---- 이번 달 금액
         smp_year = {"{}-{:02d}".format(year, m): float(def_samples_by_month.get(
             "{}-{:02d}".format(year, m), 0.0)) for m in range(1, 13)}
-        sc = st.columns([2, 2, 3])
-        sc[0].markdown("<div style='padding-top:.55rem'><b>자체샘플+이벤트지원</b></div>",
-                       unsafe_allow_html=True)
-        v_now = sc[1].number_input("샘플비용 " + period, min_value=0.0,
-                                   value=float(def_samples_by_month.get(period, 0.0)),
-                                   step=1000.0, format="%.0f", key="smp_%s" % period,
-                                   label_visibility="collapsed")
+
+        if auto is not None:
+            gc = st.columns([2, 2, 2, 3])
+            gc[0].markdown("<div style='padding-top:.55rem'><b>상품원가</b>"
+                           "<div style='font-size:.78rem;color:#64748B'>자동 계산</div></div>",
+                           unsafe_allow_html=True)
+            gc[1].markdown("<div style='padding-top:.55rem;font-size:1.35rem;"
+                           "font-weight:700'>{}</div>".format(WON.format(auto["goods"])),
+                           unsafe_allow_html=True)
+            gc[2].markdown("<div style='padding-top:.55rem'><b>배송비</b>"
+                           "<div style='font-size:.78rem;color:#64748B'>직접 입력</div></div>",
+                           unsafe_allow_html=True)
+            ship_in = gc[3].number_input(
+                "샘플 배송비 " + period, min_value=0.0, value=float(auto["ship"]),
+                step=1000.0, format="%.0f", key="smpship_%s" % period,
+                label_visibility="collapsed",
+                help="파일의 배송비 합계를 채워 두었습니다. 필요하면 고치세요.")
+            v_now = float(auto["goods"]) + float(ship_in)
+            st.markdown(
+                "<div style='margin:.4rem 0 .2rem'>샘플비용 합계 "
+                "<b style='font-size:1.5rem'>{}</b> 원 "
+                "<span style='color:#64748B'>= 상품원가 {} + 배송비 {}</span></div>".format(
+                    WON.format(v_now), WON.format(auto["goods"]), WON.format(ship_in)),
+                unsafe_allow_html=True)
+            sample_items = [("샘플 상품원가(자체부담)", float(auto["goods"])),
+                            ("샘플 배송비", float(ship_in))]
+        else:
+            sc = st.columns([2, 2, 3])
+            sc[0].markdown("<div style='padding-top:.55rem'><b>자체샘플+이벤트지원</b></div>",
+                           unsafe_allow_html=True)
+            v_now = sc[1].number_input("샘플비용 " + period, min_value=0.0,
+                                       value=float(def_samples_by_month.get(period, 0.0)),
+                                       step=1000.0, format="%.0f", key="smp_%s" % period,
+                                       label_visibility="collapsed")
+            sample_items = [("자체샘플+이벤트지원", float(v_now))]
+            sc[2].markdown("<div style='padding-top:.55rem;color:#64748B'>"
+                           "엑셀을 올리면 자동으로 계산됩니다</div>", unsafe_allow_html=True)
+
         smp_year[period] = v_now
         cum = sum(smp_year.values())
-        sc[2].markdown("<div style='padding-top:.55rem;color:#64748B'>"
-                       "{}년 누적 <b style='color:#0F172A'>{}</b> 원</div>".format(
-                           year[2:], WON.format(cum)), unsafe_allow_html=True)
+        st.caption("{}년 누적 {} 원".format(year[2:], WON.format(cum)))
 
         with st.expander("{}년 12개월 한눈에 보기".format(year[2:])):
             st.dataframe(
                 pd.DataFrame([{"월": "{}월".format(m),
-                               "자체샘플+이벤트지원": smp_year["{}-{:02d}".format(year, m)],
+                               "샘플비용": smp_year["{}-{:02d}".format(year, m)],
                                "": "◀ 이번 계산" if "{}-{:02d}".format(year, m) == period else ""}
                               for m in range(1, 13)]),
                 width="stretch", hide_index=True,
-                column_config={"자체샘플+이벤트지원": st.column_config.NumberColumn(format="%d")})
+                column_config={"샘플비용": st.column_config.NumberColumn(format="%d")})
             st.caption("누적 {} 원".format(WON.format(cum)))
 
         sample = smp_year.get(period, 0.0)
-        sample_items = [("자체샘플+이벤트지원", sample)]
         st.metric("{} 차감액".format(period), WON.format(sample) + " 원")
 
         st.divider()
@@ -1061,6 +1214,8 @@ if VIEW == "input":
             up = uploads.get(ch["name"])
             if up is not None:
                 files[ch["name"]] = (up.name, up.getvalue())
+            elif kept.get(ch["name"]) and kept[ch["name"]][1]:
+                files[ch["name"]] = kept[ch["name"]]
         return {
             "channels": [dict(c) for c in channels], "files": files,
             "cost": cost, "fee": fee, "origin": origin, "conflicts": conflicts,
@@ -1072,6 +1227,7 @@ if VIEW == "input":
 
     ready = cost is not None and (
         any(uploads.get(ch["name"]) is not None for ch in channels)
+        or any(kept.get(ch["name"]) and kept[ch["name"]][1] for ch in channels)
         or any(ch["name"] in _prev for ch in channels))
     if st.button("이익률 계산", type="primary", disabled=not ready, width="stretch"):
         snap = take_snapshot()
@@ -1085,12 +1241,13 @@ if VIEW == "input":
             for e in errs:
                 st.warning(e)
 
-    _prev_files = (st.session_state.get("calc_snapshot") or {}).get("files", {})
     _now_up = any(uploads.get(ch["name"]) is not None for ch in channels)
-    if _prev_files and not _now_up:
-        st.info("직전 계산에 쓴 매출 파일 **{}개** 가 남아 있습니다 — {}\n\n"
-                "그대로 다시 계산하거나, 새 파일을 올려 덮어쓸 수 있습니다."
-                .format(len(_prev_files), " · ".join(_prev_files)))
+    _keep_names = [ch["name"] for ch in channels
+                   if kept.get(ch["name"]) and kept[ch["name"]][1]]
+    if _keep_names and not _now_up:
+        st.info("{} 에 보관된 매출 파일 **{}개** 로 계산합니다 — {}\n\n"
+                "새 파일을 올리면 그 채널만 덮어씁니다."
+                .format(period, len(_keep_names), " · ".join(_keep_names)))
     elif not ready:
         if cost is None:
             st.info("먼저 사이드바에서 **이익률 마스터** 를 지정하세요.")

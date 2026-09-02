@@ -67,7 +67,7 @@ def main():
         return 1
 
     log("\n[3/5] 마진율표 읽는 중... (파일이 커서 잠시 걸립니다)")
-    cost, fee, conflicts, report, origin = E.load_lookups(resolved)
+    cost, fee, conflicts, report, origin, names = E.load_lookups(resolved)
     for r in report:
         log("  {:<12} 원가 {:>6,}건 (신규 {:>5,}) / 요율 {:>5,}건".format(
             r["label"], r["cost"], r["cost_new"], r["fee"]))
@@ -76,6 +76,8 @@ def main():
     log("\n[4/5] DB 에 올리는 중...")
     db.replace_lookups(cost, fee, origin)
     log("  기준 원가·요율 저장 완료")
+    n_ix = db.replace_name_index(names)
+    print("  상품명+옵션명 색인 {:,}줄 저장 (샘플비용 자동계산용)".format(n_ix), flush=True)
     cand = E.collect_candidates(resolved)
     db.save_candidates(cand)
     log("  후보 단가 {:,}줄 저장 (월별로 그 시점 단가를 다시 고르기 위함)".format(len(cand)))

@@ -210,10 +210,13 @@ def open_wb(src, **kw):
         raise
 
 
-def find_header(ws, need, scan_rows=60):
+def find_header(ws, need, scan_rows=60, rows=None):
     """헤더 행을 찾아 (행번호, {필드: 열번호}) 반환. 하나라도 없으면 (None, None).
-       시트 크기 정보가 없거나 틀려도 되도록 iter_rows 로 훑는다."""
-    for r, row in enumerate(ws.iter_rows(max_row=scan_rows, values_only=True), start=1):
+       시트 크기 정보가 없거나 틀려도 되도록 iter_rows 로 훑는다.
+       rows 를 주면 이미 읽어둔 값 목록을 쓴다 (같은 시트를 두 번 훑지 않도록)."""
+    src = rows[:scan_rows] if rows is not None else ws.iter_rows(
+        max_row=scan_rows, values_only=True)
+    for r, row in enumerate(src, start=1):
         seen = {}
         for c, v in enumerate(row, start=1):
             k = norm(v)
@@ -509,7 +512,24 @@ def load_margin_master(src, as_of=None):
     fee = dict(base_fee)
     fee.update(exc_fee)
     conflicts = build_conflicts(occ, cost_best)
-    return cost, fee, conflicts, src
+
+    # 4) 상품명+옵션명 → 코드 색인 (샘플비용용).  세트/낱개 표기를 걷어낸 열쇠도 함께 만든다
+    #    (기준월 상한과 무관하게 만든다 — 코드를 찾는 색인일 뿐이고,
+    #     실제 단가는 상한이 적용된 cost 에서 가져오므로 안전하다)
+    names = {"exact": {}, "core": {}}
+    for title, rows, start, col in parsed:
+        if not ("code" in col and "name" in col and "opt" in col):
+            continue
+        for row in rows[start:]:
+            k = code_key(_cell(row, col["code"]))
+            nm, op = _cell(row, col["name"]), _cell(row, col["opt"])
+            if not k or not nm or not op:
+                continue
+            names["exact"].setdefault((norm(nm), norm(op)), k)
+            ck = (norm(nm), opt_core(op))
+            if ck[1] and ck not in names["core"]:
+                names["core"][ck] = (k, set_count(op) or set_count(nm) or 1)
+    return cost, fee, conflicts, src, names
 
 
 # ---------------------------------------------------------------- 연도별 파일 자동 인식
@@ -612,17 +632,25 @@ def collect_candidates(sources):
 def load_lookups(sources, as_of=None):
     """여러 기준 파일을 순서대로 읽어 합친다 (앞선 파일이 우선).
        sources: [(라벨, 경로 또는 파일객체), ...]
-       반환: (cost, fee, conflicts, report, origin)
-       origin: {상품코드: 그 값을 제공한 파일 라벨}"""
+       반환: (cost, fee, conflicts, report, origin, names)
+       origin: {상품코드: 그 값을 제공한 파일 라벨}
+       names : 상품명+옵션명 → 코드 색인 (샘플비용 계산용)"""
     cost, fee, conflicts, report, origin = {}, {}, [], [], {}
+    names = {"exact": {}, "core": {}}
     for label, src in sources:
         if src is None:
             continue
         wb = open_wb(src, read_only=True, data_only=True)
         margin = is_margin_workbook(wb)
         wb.close()
-        c, f, cf, sheet_of = (load_margin_master(src, as_of) if margin
-                              else load_master(src))
+        if margin:
+            c, f, cf, sheet_of, nx = load_margin_master(src, as_of)
+        else:
+            c, f, cf, sheet_of = load_master(src)
+            nx = {"exact": {}, "core": {}}
+        for _kind in ("exact", "core"):
+            for _k, _v in nx[_kind].items():
+                names[_kind].setdefault(_k, _v)
         added_c = sum(1 for k in c if k not in cost)
         added_f = sum(1 for k in f if k not in fee)
         for k, v in c.items():
@@ -636,7 +664,165 @@ def load_lookups(sources, as_of=None):
         report.append({"label": label, "format": "마진율표" if margin else "구마스터",
                        "cost": len(c), "fee": len(f),
                        "cost_new": added_c, "fee_new": added_f})
-    return cost, fee, conflicts, report, origin
+    return cost, fee, conflicts, report, origin, names
+
+
+# ---------------------------------------------------------------- 샘플비용
+# 샘플 리스트의 옵션명은 **낱개** 기준이고, 마진율표는 **세트** 기준인 경우가 많다.
+#   샘플 [7호-나시-단품]        ↔  마진율표 [7호-나시-3개1세트]   → 세트단가 ÷ 3
+#   샘플 [110-화이트]-낱개 1개   ↔  마진율표 [110-화이트]           → 상품명이 '3개1세트' → ÷ 3
+# 그래서 세트/낱개 표기를 걷어낸 '핵심 옵션명'으로 한 번 더 맞춰 본다.
+SET_RE = re.compile(r"(\d+)\s*개\s*1?\s*세트")
+LOOSE_RE = re.compile(r"낱개\s*(\d+)?\s*개?")
+SOLO_RE = re.compile(r"단품")
+_TRIM = " -·,/[]()"
+
+SAMPLE_ALIASES = {
+    "date": ["날짜", "일자", "주문일", "발주일", "지원일"],
+    "gubun": ["구분", "부담구분", "비용구분"],
+    "name": ["상품명", "품목명"],
+    "opt": ["옵션명", "옵션"],
+}
+SAMPLE_OPTIONAL = {
+    "qty": ["수량"],
+    "ship": ["배송비"],
+    "price": ["상품단가", "단가"],
+    "state": ["진행여부"],
+}
+OWN_COST = "자체부담"          # 이 구분만 원가에 반영한다
+
+
+def set_count(text):
+    """'3개1세트' → 3 (없으면 0)"""
+    m = SET_RE.search(norm(text))
+    return int(m.group(1)) if m else 0
+
+
+def loose_count(text):
+    """'낱개 2개' → 2 · '낱개'/'단품' → 1 · 표기 없으면 0"""
+    n = norm(text)
+    m = LOOSE_RE.search(n)
+    if m:
+        return int(m.group(1)) if m.group(1) else 1
+    return 1 if SOLO_RE.search(n) else 0
+
+
+def opt_core(text):
+    """옵션명에서 세트·낱개·단품 표기를 걷어낸 핵심 문자열"""
+    s = norm(text)
+    s = SET_RE.sub("", s)
+    s = LOOSE_RE.sub("", s)
+    s = SOLO_RE.sub("", s)
+    prev = None
+    while s != prev:
+        prev = s
+        s = s.strip(_TRIM)
+    return s
+
+
+def read_samples(src):
+    """샘플 발주/지원 리스트(첫 번째 시트) → 줄 목록.
+       반환: (rows, 시트이름).  rows 항목 = dict(month, date, gubun, name, opt, qty, ship, price, state)"""
+    # 읽기전용 모드 — 이 파일은 시트 크기를 100만 행으로 적어두는 경우가 많아
+    # 일반 모드로 열면 빈 셀 수천만 개를 훑느라 1분 가까이 걸린다.
+    wb = open_wb(src, read_only=True, data_only=True)
+    try:
+        ws = wb.worksheets[0]
+        title = ws.title
+        rows_all = list(ws.iter_rows(values_only=True))
+        hr, col = find_header(ws, SAMPLE_ALIASES, rows=rows_all)
+        if hr is None:
+            seen = [str(v).strip() for v in (rows_all[0] if rows_all else [])
+                    if v is not None and str(v).strip()]
+            raise ValueError(
+                "샘플 파일에서 열을 찾지 못했습니다. 첫 시트 '{}' 에 "
+                "날짜·구분·상품명·옵션명 열이 있어야 합니다.  찾은 열: {}".format(
+                    title, ", ".join(seen[:14]) or "(없음)"))
+        _, opt = find_header(ws, SAMPLE_OPTIONAL, rows=rows_all)
+        if opt:
+            col.update(opt)
+        out = []
+        for row in rows_all[hr:]:
+            nm = _pick(row, col, "name")
+            if not nm or not str(nm).strip():
+                continue
+            d = _as_date(_pick(row, col, "date"))
+            if d == _FAR_PAST:
+                continue
+            out.append({
+                "month": "{:04d}-{:02d}".format(d[0], d[1]),
+                "date": d,
+                "gubun": str(_pick(row, col, "gubun") or "").strip(),
+                "name": str(nm).strip(),
+                "opt": str(_pick(row, col, "opt") or "").strip(),
+                "qty": num(_pick(row, col, "qty")) or 1.0,
+                "ship": num(_pick(row, col, "ship")),
+                "price": num(_pick(row, col, "price")),
+                "state": str(_pick(row, col, "state") or "").strip(),
+            })
+        return out, title
+    finally:
+        wb.close()
+
+
+def lookup_sample_cost(name, opt, names, cost):
+    """상품명+옵션명으로 기준 원가를 찾는다.
+       반환: (낱개원가, 상품코드, 찾은방법)  — 못 찾으면 (0, '', '')"""
+    if not names:
+        return 0.0, "", ""
+    nn = norm(name)
+    k = names.get("exact", {}).get((nn, norm(opt)))
+    if k and cost.get(k):
+        return float(cost[k]), k, "정확"
+    core = opt_core(opt)
+    if core:
+        hit = names.get("core", {}).get((nn, core))
+        if hit:
+            k, setn = hit
+            v = cost.get(k)
+            if v:
+                if loose_count(opt) and setn > 1:
+                    return float(v) / setn, k, "세트÷{}".format(setn)
+                return float(v), k, "옵션정리"
+    return 0.0, "", ""
+
+
+def match_samples(rows, period, names, cost, own_only=True):
+    """샘플 줄 → 기준월 집계.
+       반환 dict:
+         items    매칭된 줄 [{name, opt, qty, unit, amount, code, how}]
+         missing  못 찾은 줄 [{name, opt, qty, price}]  (price=파일에 적힌 단가)
+         goods    상품원가 합계
+         ship     배송비 합계
+         months   {월: {rows, goods, ship, miss}}  — 파일 전체 기준"""
+    months = {}
+    items, missing = [], []
+    goods = ship = 0.0
+    for r in rows:
+        if own_only and norm(r["gubun"]) != OWN_COST:
+            continue
+        m = months.setdefault(r["month"], {"rows": 0, "goods": 0.0, "ship": 0.0, "miss": 0})
+        unit, code, how = lookup_sample_cost(r["name"], r["opt"], names, cost)
+        mult = loose_count(r["opt"]) or 1
+        amount = unit * mult * (r["qty"] or 1)
+        m["rows"] += 1
+        m["ship"] += r["ship"]
+        if unit:
+            m["goods"] += amount
+        else:
+            m["miss"] += 1
+        if r["month"] != period:
+            continue
+        ship += r["ship"]
+        if unit:
+            goods += amount
+            items.append({"name": r["name"], "opt": r["opt"], "qty": r["qty"],
+                          "unit": unit, "amount": amount, "code": code, "how": how})
+        else:
+            missing.append({"name": r["name"], "opt": r["opt"], "qty": r["qty"],
+                            "price": r["price"]})
+    return {"items": items, "missing": missing, "goods": goods, "ship": ship,
+            "months": months}
 
 
 def load_overrides(src):

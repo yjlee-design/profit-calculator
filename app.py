@@ -739,8 +739,10 @@ def run_calc(snap=None):
     manual = st.session_state.get("manual_cost", {})
     ov = dict(snap["override"])
     for k, v in manual.items():
-        if k and v:
-            ov.setdefault(k, (float(v), False))     # 기준 파일에 없을 때만 쓰임
+        if k and v is not None:
+            # 0원도 그대로 적용한다 (원가가 정말 0인 품목이 있다).
+            # 우선적용 False → 기준 파일에 값이 생기면 그쪽이 이긴다.
+            ov.setdefault(k, (float(v), False))
 
     results, errs = [], []
     for ch in snap["channels"]:
@@ -769,7 +771,7 @@ def run_calc(snap=None):
     st.session_state["out"] = {
         "results": results, "total": total, "errs": errs,
         "xlsx": buf.getvalue(), "period": snap["period"],
-        "manual_used": {k: v for k, v in manual.items() if v},
+        "manual_used": {k: v for k, v in manual.items() if v is not None},
     }
     save_history(snap["period"], results, total)     # 월별 추이 그래프용 이력
     save_month_files(snap["period"], snap["files"])   # 다음에 열어도 결과가 보이도록
@@ -1522,35 +1524,39 @@ if out:
             st.error("원가를 못 찾은 {}건 — 원가가 `0` 으로 잡혀 **이익이 과대계상**됩니다. "
                      "아래 `원가(직접입력)` 칸에 넣고 [입력한 원가로 다시 계산] 을 누르세요."
                      .format(len(miss)))
+            st.caption("**0원도 넣을 수 있습니다.** 칸을 비워 두면 '아직 안 넣음' 이고, "
+                       "`0` 을 적으면 원가가 정말 0원이라는 뜻입니다.")
+            _mdf = pd.DataFrame([{"채널": c, "상품코드": raw, "품목명[규격]": nm,
+                                  "수량": q, "판매액": a,
+                                  "원가(직접입력)": (None if manual.get(_k) is None
+                                                else float(manual[_k]))}
+                                 for _k, raw, nm, q, a, c in miss])
+            # 전부 비어 있어도 숫자 열로 잡히도록 (빈칸=안 넣음, 0=원가 0원)
+            _mdf["원가(직접입력)"] = pd.to_numeric(_mdf["원가(직접입력)"], errors="coerce")
             miss_df = st.data_editor(
-                pd.DataFrame([{"채널": c, "상품코드": raw, "품목명[규격]": nm,
-                               "수량": q, "판매액": a,
-                               "원가(직접입력)": float(manual.get(_k, 0.0) or 0.0)}
-                              for _k, raw, nm, q, a, c in miss]),
+                _mdf,
                 width="stretch", hide_index=True, key="miss_editor",
                 disabled=["채널", "상품코드", "품목명[규격]", "수량", "판매액"],
                 column_config={
                     "판매액": st.column_config.NumberColumn(format="%d"),
                     "수량": st.column_config.NumberColumn(format="%d"),
                     "원가(직접입력)": st.column_config.NumberColumn(
-                        format="%d", min_value=0.0, step=100.0,
-                        help="1개당 원가를 넣으세요. 수량은 자동으로 곱해집니다."),
+                        format="%d", min_value=0.0, step=100.0, default=None,
+                        help="1개당 원가를 넣으세요. 수량은 자동으로 곱해집니다. "
+                             "0 을 넣으면 원가 0원으로 확정합니다."),
                 })
             typed = {}
             for _i, r in miss_df.iterrows():
-                v = E.num(r["원가(직접입력)"])
-                if v > 0:
-                    typed[E.code_key(r["상품코드"])] = v
+                raw_v = r["원가(직접입력)"]
+                if raw_v is None or pd.isna(raw_v):
+                    continue                       # 안 넣은 칸은 건너뛴다
+                typed[E.code_key(r["상품코드"])] = float(E.num(raw_v))
 
-            b1, b2 = st.columns([1, 1])
-            if b1.button("입력한 원가로 다시 계산", type="primary",
-                         disabled=not typed, width="stretch"):
-                st.session_state["manual_cost"] = {**manual, **typed}
-                ok, _e = run_calc()
-                if ok:
-                    st.rerun()
-            if b2.button(("Supabase 에 저장 (매달 자동 적용)" if USE_DB
-                          else "원가보정.xlsx 에 저장 (매달 자동 적용)"),
+            st.caption("넣은 원가는 **기억해 두었다가 다음 달에도 자동으로 씁니다.** "
+                       "나중에 기준 파일에 그 코드가 올라오면 **기준 파일 값이 우선**하고 "
+                       "여기 값은 자동으로 물러납니다. (우선적용 X)")
+            b1, b2 = st.columns([2, 1])
+            if b1.button("입력한 원가로 다시 계산 · 기억하기", type="primary",
                          disabled=not typed, width="stretch",
                          help="다음 달부터는 입력하지 않아도 이 원가가 쓰입니다"):
                 try:
@@ -1565,18 +1571,25 @@ if out:
                         where = "원가보정.xlsx"
                     st.session_state["manual_cost"] = {**manual, **typed}
                     load_override_cached.clear()
-                    st.success("{} 에 {}건 저장했습니다. 다시 계산합니다.".format(where, n))
+                    st.success("{} 에 {}건 기억했습니다. 다시 계산합니다.".format(where, n))
                     ok, _e = run_calc()
                     if ok:
                         st.rerun()
                 except PermissionError:
                     st.error("원가보정.xlsx 가 엑셀에서 열려 있습니다. 닫고 다시 시도하세요.")
+            if b2.button("이번 계산에만 쓰기", disabled=not typed, width="stretch",
+                         help="기억하지 않고 이번 결과에만 반영합니다"):
+                st.session_state["manual_cost"] = {**manual, **typed}
+                ok, _e = run_calc()
+                if ok:
+                    st.rerun()
         else:
             st.success("모든 상품의 원가를 찾았습니다.")
         if manual:
             with st.expander("직접 입력한 원가 {}건 — 되돌리기".format(len(manual))):
                 st.dataframe(pd.DataFrame([{"상품코드": k, "원가": v}
-                                           for k, v in manual.items()]),
+                                           for k, v in manual.items()
+                                           if v is not None]),
                              width="stretch", hide_index=True,
                              column_config={"원가": st.column_config.NumberColumn(format="%d")})
                 if st.button("직접 입력한 원가 모두 지우기"):

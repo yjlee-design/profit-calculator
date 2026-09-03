@@ -7,14 +7,14 @@ gatherUsageStats = false
 [theme]
 base = "light"
 primaryColor = "#6366F1"
-backgroundColor = "#F8FAFC"
+backgroundColor = "#F6F7FB"
 secondaryBackgroundColor = "#FFFFFF"
-textColor = "#0F172A"
+textColor = "#111827"
 linkColor = "#6366F1"
-borderColor = "#E2E8F0"
-baseRadius = "12px"
+borderColor = "#E9EBF0"
+baseRadius = "14px"
 font = "Pretendard, -apple-system, 'Malgun Gothic', sans-serif"
 
 [theme.sidebar]
 backgroundColor = "#FFFFFF"
-borderColor = "#E2E8F0"
+borderColor = "#E9EBF0"

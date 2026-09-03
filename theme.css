@@ -1,26 +1,40 @@
 @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css');
 
+/* 사내 B2B 웹앱 화면과 같은 결로 맞춘 테마.
+   구조는 그대로 두고 색·글씨·간격·표 모양만 바꾼다. */
+
 :root {
-  --bg:        #F8FAFC;
+  --bg:        #F6F7FB;   /* 페이지 바탕 — 아주 옅은 라벤더 회색 */
   --card:      #FFFFFF;
-  --ink:       #0F172A;
-  --muted:     #64748B;
+  --ink:       #111827;   /* 진한 글씨 */
+  --ink-2:     #1E293B;   /* 숫자용 남색 */
+  --muted:     #6B7280;   /* 흐린 글씨 */
+  --faint:     #9CA3AF;
   --accent:    #6366F1;
   --accent-sf: #EEF0FE;
-  --ok:        #10B981;
-  --warn:      #F59E0B;
+  --accent-dk: #4F46E5;
+  --ok:        #16A34A;
+  --ok-sf:     #ECFDF3;
+  --warn:      #B45309;
+  --warn-sf:   #FFFBEB;
   --danger:    #EF4444;
-  --line:      #E2E8F0;
-  --r:         12px;
-  --shadow:    0 1px 2px rgba(15, 23, 42, .04), 0 1px 3px rgba(15, 23, 42, .03);
+  --danger-sf: #FEF2F2;
+  --line:      #E9EBF0;   /* 카드 테두리 */
+  --line-2:    #F1F2F6;   /* 표 안쪽 줄 */
+  --chip:      #F1F2F7;   /* 보조 버튼 바탕 */
+  --r:         14px;
+  --r-sm:      10px;
+  --shadow:    0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .03);
   --font: "Pretendard", "Pretendard Variable", -apple-system, BlinkMacSystemFont,
           "Malgun Gothic", "맑은 고딕", system-ui, sans-serif;
+  --num: "Pretendard", ui-monospace, "SF Mono", "Segoe UI", sans-serif;
 }
 
 /* ---------- 기본 ---------- */
 html, body, button, input, textarea, select,
 [class*="st-"]:not([data-testid="stIconMaterial"]) {
   font-family: var(--font) !important;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* 아이콘은 아이콘 글꼴을 그대로 써야 한다.
@@ -43,25 +57,29 @@ span[class*="material-symbols"],
   -webkit-font-feature-settings: 'liga';
   -webkit-font-smoothing: antialiased;
 }
+
 [data-testid="stAppViewContainer"] { background: var(--bg); }
 [data-testid="stHeader"] { background: transparent; }
 [data-testid="stMainBlockContainer"] {
-  padding: 2.4rem 2.8rem 4rem;
-  max-width: 1500px;
+  padding: 2.2rem 2.6rem 4rem;
+  max-width: 1560px;
 }
 body, p, li, div { color: var(--ink); }
 
-h1, h2, h3, h4 { color: var(--ink) !important; letter-spacing: -.02em; }
-h1 { font-size: 1.9rem !important; font-weight: 700 !important; margin-bottom: .2rem !important; }
-h2 { font-size: 1.28rem !important; font-weight: 700 !important; margin: .4rem 0 .2rem !important; }
-h3 { font-size: 1.06rem !important; font-weight: 600 !important; }
+/* ---------- 제목 ---------- */
+h1, h2, h3, h4, h5 { color: var(--ink) !important; letter-spacing: -.021em; }
+h1 { font-size: 1.72rem !important; font-weight: 800 !important; margin-bottom: .15rem !important; }
+h2 { font-size: 1.24rem !important; font-weight: 700 !important; margin: .5rem 0 .15rem !important; }
+h3 { font-size: 1.04rem !important; font-weight: 700 !important; }
+h4, h5 { font-size: .95rem !important; font-weight: 700 !important; }
 
 /* 설명글은 작고 흐리게 */
 [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] p {
   color: var(--muted) !important;
-  font-size: .82rem !important;
-  line-height: 1.55;
+  font-size: .805rem !important;
+  line-height: 1.6;
 }
+[data-testid="stMarkdownContainer"] p { font-size: .9rem; line-height: 1.62; }
 hr, [data-testid="stDivider"] { border-color: var(--line) !important; }
 
 /* ---------- 왼쪽 메뉴 ---------- */
@@ -69,117 +87,198 @@ hr, [data-testid="stDivider"] { border-color: var(--line) !important; }
   background: var(--card);
   border-right: 1px solid var(--line);
 }
-[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top: 1.6rem; }
-[data-testid="stSidebar"] h1 { font-size: 1.12rem !important; font-weight: 700 !important; }
-[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { font-size: .95rem !important; }
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { font-size: .77rem !important; }
+[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] { padding-top: 1.5rem; }
+[data-testid="stSidebar"] h1 { font-size: 1.06rem !important; font-weight: 800 !important; }
+[data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { font-size: .92rem !important; }
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] { font-size: .765rem !important; }
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p { font-size: .855rem; }
 
-/* ---------- 숫자는 크게 ---------- */
+/* 메뉴 라디오 — 알약 모양 */
+[data-testid="stSidebar"] [role="radiogroup"] { gap: .18rem; }
+[data-testid="stSidebar"] [role="radiogroup"] label {
+  padding: .42rem .6rem;
+  border-radius: var(--r-sm);
+  transition: background .12s ease;
+}
+[data-testid="stSidebar"] [role="radiogroup"] label:hover { background: var(--bg); }
+[data-testid="stSidebar"] [role="radiogroup"] label p {
+  font-size: .89rem !important; font-weight: 600; color: var(--ink);
+}
+
+/* ---------- 큰 숫자 (지표 카드) ---------- */
 [data-testid="stMetric"] {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--r);
-  padding: 1.05rem 1.15rem;
+  padding: 1.1rem 1.2rem 1.05rem;
   box-shadow: var(--shadow);
 }
 [data-testid="stMetricLabel"], [data-testid="stMetricLabel"] p {
   color: var(--muted) !important;
-  font-size: .78rem !important;
+  font-size: .795rem !important;
   font-weight: 500 !important;
-  letter-spacing: .01em;
+  letter-spacing: 0;
 }
 [data-testid="stMetricValue"] {
-  color: var(--ink) !important;
-  font-size: 1.62rem !important;
-  font-weight: 700 !important;
-  letter-spacing: -.03em;
-  line-height: 1.25;
+  color: var(--ink-2) !important;
+  font-family: var(--num) !important;
+  /* 칸이 좁아지면 글씨도 같이 줄어든다 (숫자가 잘리지 않도록) */
+  font-size: clamp(1.02rem, 1.15vw + .42rem, 1.66rem) !important;
+  font-weight: 800 !important;
+  letter-spacing: -.035em;
+  line-height: 1.24;
+  font-variant-numeric: tabular-nums;
+  padding-top: .18rem;
 }
-[data-testid="stMetricDelta"] { font-size: .74rem !important; color: var(--muted) !important; }
+/* 긴 금액은 잘라내지 말고 줄을 바꾼다 (기본은 ... 으로 잘린다) */
+[data-testid="stMetricValue"] > div,
+[data-testid="stMetricValue"] [data-testid="stMarkdownContainer"] {
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+[data-testid="stMetricDelta"] {
+  font-size: .755rem !important;
+  color: var(--muted) !important;
+  font-weight: 500;
+}
 [data-testid="stMetricDelta"] svg { display: none; }
+[data-testid="stMetricDelta"] > div { padding-left: 0 !important; }
+
+/* 결과 화면 지표 6칸 — 총이익액·이익률·미매칭에 색을 준다.
+   :nth-last-child 로 '정확히 6칸인 줄' 에만 걸리게 한다. */
+[data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(4):nth-last-child(3)
+  [data-testid="stMetricValue"] { color: var(--accent) !important; }
+[data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(5):nth-last-child(2)
+  [data-testid="stMetricValue"] { color: var(--ok) !important; }
+[data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:nth-child(6):nth-last-child(1)
+  [data-testid="stMetricValue"] { color: var(--danger) !important; }
 
 /* ---------- 버튼 ---------- */
 [data-testid="stBaseButton-secondary"],
 [data-testid="stBaseButton-primary"] {
-  border-radius: 10px;
-  font-weight: 600;
-  font-size: .86rem;
-  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-weight: 700;
+  font-size: .855rem;
+  padding: .46rem .95rem;
   transition: all .12s ease;
   box-shadow: none;
+  border: 1px solid transparent;
 }
 [data-testid="stBaseButton-secondary"] {
-  background: var(--card); color: var(--ink);
+  background: var(--chip);
+  color: #4B5563;
+  border-color: transparent;
 }
 [data-testid="stBaseButton-secondary"]:hover {
-  border-color: var(--accent); color: var(--accent); background: var(--accent-sf);
+  background: var(--accent-sf); color: var(--accent-dk);
 }
+[data-testid="stBaseButton-secondary"]:active { background: #E5E7F5; }
 [data-testid="stBaseButton-primary"] {
   background: var(--accent); color: #fff; border-color: var(--accent);
+  box-shadow: 0 1px 2px rgba(99, 102, 241, .25);
 }
-[data-testid="stBaseButton-primary"]:hover { filter: brightness(1.07); }
+[data-testid="stBaseButton-primary"]:hover { background: var(--accent-dk); border-color: var(--accent-dk); }
+[data-testid="stBaseButton-primary"]:disabled,
+[data-testid="stBaseButton-secondary"]:disabled { opacity: .45; box-shadow: none; }
+
+/* 내려받기 버튼도 같은 결로 */
+[data-testid="stDownloadButton"] button { border-radius: var(--r-sm); font-weight: 700; }
 
 /* ---------- 입력칸 ---------- */
 [data-testid="stNumberInput"] input,
 [data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea,
 [data-baseweb="select"] > div {
-  border-radius: 10px !important;
-  border-color: var(--line) !important;
+  border-radius: var(--r-sm) !important;
+  border-color: #DFE3EA !important;
   background: var(--card) !important;
   color: var(--ink) !important;
-  font-size: .88rem !important;
+  font-size: .875rem !important;
+}
+[data-testid="stNumberInput"] input {
+  font-family: var(--num) !important;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  font-weight: 600;
 }
 [data-testid="stNumberInput"] input:focus,
-[data-testid="stTextInput"] input:focus {
+[data-testid="stTextInput"] input:focus,
+[data-testid="stTextArea"] textarea:focus {
   border-color: var(--accent) !important;
   box-shadow: 0 0 0 3px var(--accent-sf) !important;
 }
-[data-testid="stWidgetLabel"] p { color: var(--muted) !important; font-size: .8rem !important; }
+[data-testid="stWidgetLabel"] p {
+  color: var(--muted) !important; font-size: .795rem !important; font-weight: 500;
+}
 
 /* ---------- 카드형 블록 ---------- */
 [data-testid="stFileUploaderDropzone"],
 [data-testid="stExpander"] details,
-[data-testid="stDataFrame"] {
+[data-testid="stDataFrame"],
+[data-testid="stDataFrameResizable"] {
   background: var(--card) !important;
   border: 1px solid var(--line) !important;
   border-radius: var(--r) !important;
   box-shadow: var(--shadow);
 }
-[data-testid="stExpander"] summary { font-weight: 600; font-size: .9rem; color: var(--ink); }
-[data-testid="stFileUploaderDropzone"] { padding: 1rem 1.1rem; }
+[data-testid="stExpander"] summary {
+  font-weight: 700; font-size: .885rem; color: var(--ink);
+  padding: .72rem .95rem;
+}
+[data-testid="stExpander"] summary:hover { color: var(--accent-dk); }
+[data-testid="stFileUploaderDropzone"] { padding: .95rem 1.05rem; }
+[data-testid="stFileUploaderDropzone"] small { color: var(--faint); font-size: .74rem; }
 
-/* ---------- 탭 ---------- */
+/* ---------- 표 ---------- */
+/* 표 안쪽은 캔버스로 그려져 색은 config.toml 의 [theme] 이 정한다.
+   여기서는 테두리·여백·글자 크기만 다듬는다. */
+[data-testid="stDataFrame"] { font-size: .855rem; }
+[data-testid="stDataFrame"] * { font-variant-numeric: tabular-nums; }
+[data-testid="stElementToolbar"] { background: transparent; }
+
+/* ---------- 탭 (채널별 상세) ---------- */
 [data-testid="stTabs"] [data-baseweb="tab-list"] {
-  gap: .35rem; border-bottom: 1px solid var(--line);
+  gap: .3rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: .1rem;
 }
 [data-testid="stTab"] {
-  font-size: .87rem; font-weight: 600; color: var(--muted);
-  border-radius: 10px 10px 0 0; padding: .5rem .85rem;
+  font-size: .865rem; font-weight: 700; color: var(--muted);
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  padding: .5rem .9rem;
 }
-[data-testid="stTab"][aria-selected="true"] { color: var(--accent) !important; }
-[data-testid="stTabs"] [data-baseweb="tab-highlight"] { background: var(--accent) !important; }
+[data-testid="stTab"]:hover { color: var(--ink); background: var(--bg); }
+[data-testid="stTab"][aria-selected="true"] { color: var(--accent-dk) !important; }
+[data-testid="stTabs"] [data-baseweb="tab-highlight"] {
+  background: var(--accent) !important; height: 2.5px;
+}
 
 /* ---------- 알림 ---------- */
 [data-testid="stAlertContainer"] {
   border-radius: var(--r);
   border: 1px solid var(--line);
   box-shadow: none;
-  font-size: .85rem;
+  font-size: .855rem;
+  padding: .8rem 1rem;
 }
+[data-testid="stAlertContainer"] p { font-size: .855rem; }
 [data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) {
-  background: var(--accent-sf); border-color: #C7CBFA;
+  background: var(--accent-sf); border-color: #D7DAFB;
 }
 [data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) {
-  background: #ECFDF5; border-color: #A7F3D0;
+  background: var(--ok-sf); border-color: #BBF7D0;
 }
 [data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) {
-  background: #FFFBEB; border-color: #FDE68A;
+  background: var(--warn-sf); border-color: #FDE68A;
 }
 [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) {
-  background: #FEF2F2; border-color: #FECACA;
+  background: var(--danger-sf); border-color: #FECACA;
 }
 
-/* ---------- 넉넉한 여백 ---------- */
-[data-testid="stVerticalBlock"] { gap: .85rem; }
-[data-testid="stMainBlockContainer"] hr { margin: 1.6rem 0; }
-[data-testid="stElementToolbar"] { background: transparent; }
+/* ---------- 여백 ---------- */
+[data-testid="stVerticalBlock"] { gap: .8rem; }
+[data-testid="stMainBlockContainer"] hr { margin: 1.5rem 0; }
+[data-testid="stHorizontalBlock"] { gap: .8rem; }

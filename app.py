@@ -510,12 +510,23 @@ NAV = {"데이터 입력": "input", "결과": "result"}
 NAV_REV = {v: k for k, v in NAV.items()}
 
 
+def remember(key, value):
+    """다음에 열었을 때도 그대로 나오도록 보관 (DB 가 있을 때만)"""
+    if not db.enabled():
+        return
+    try:
+        db.save_setting(key, value)
+    except Exception:
+        pass
+
+
 def go(view):
     """메뉴와 화면을 함께 바꾼다.
        라디오는 이미 그려진 뒤라 직접 못 고치므로, 다음 실행에 반영되도록 예약한다.
        호출한 쪽에서 st.rerun() 을 해야 한다."""
     st.session_state["view"] = view
     st.session_state["_nav_pending"] = NAV_REV[view]
+    remember("view", view)
 
 
 st.sidebar.title("📊 이익률 계산기")
@@ -554,6 +565,9 @@ _yy = _c1.selectbox("년", _years, key="period_year",
 _mm = _c2.selectbox("월", list(range(1, 13)), key="period_month",
                     format_func=lambda x: "{}월".format(x), label_visibility="collapsed")
 period = "{:04d}-{:02d}".format(_yy, _mm)
+if st.session_state.get("_last_period") != period:
+    st.session_state["_last_period"] = period
+    remember("period", period)
 st.sidebar.caption("결과 파일 이름이 됩니다 → `{} 이익률.xlsx`".format(period))
 
 st.sidebar.divider()
@@ -562,9 +576,17 @@ st.sidebar.divider()
 if "_nav_pending" in st.session_state:
     st.session_state["nav_menu"] = st.session_state.pop("_nav_pending")
 if "nav_menu" not in st.session_state:
-    st.session_state["nav_menu"] = NAV_REV.get(st.session_state.get("view", "input"),
-                                               "데이터 입력")
+    _last = "input"
+    if USE_DB:
+        try:
+            _last = db.get_setting("view", "input") or "input"
+        except Exception:
+            _last = "input"
+    st.session_state["nav_menu"] = NAV_REV.get(
+        st.session_state.get("view", _last), "데이터 입력")
 _pick = st.sidebar.radio("메뉴", list(NAV), key="nav_menu", label_visibility="collapsed")
+if st.session_state.get("view") != NAV[_pick]:
+    remember("view", NAV[_pick])
 st.session_state["view"] = NAV[_pick]
 if NAV[_pick] == "result" and not st.session_state.get("out"):
     st.sidebar.caption("아직 계산 결과가 없습니다. **데이터 입력** 에서 계산하세요.")
@@ -631,6 +653,12 @@ def load_sources(uploaded=None, box=None):
     except Exception as e:
         err(str(e))
 
+
+# 기준월이 바뀌면 그 달 기준으로 원가를 다시 읽는다.
+# (마진율표는 기재날짜별로 값이 달라서, 8월 기준 원가로 7월을 계산하면 틀린다)
+_lk = st.session_state.get("lookups")
+if _lk is not None and _lk.get("sig") and _lk["sig"][0] != period:
+    st.session_state["lookups"] = None
 
 # 아직 한 번도 안 읽었으면 어느 화면이든 먼저 읽어둔다
 if st.session_state.get("lookups") is None:
@@ -783,9 +811,17 @@ def run_calc(snap=None):
 
 _prev = (st.session_state.get("calc_snapshot") or {}).get("files", {})
 
-# ---- 페이지를 새로 열었을 때, 그 달의 저장된 결과를 되살린다
-if not st.session_state.get("out") and not st.session_state.get("restore_done"):
-    st.session_state["restore_done"] = True
+# ---- 그 달의 저장된 결과를 되살린다
+#      처음 열었을 때뿐 아니라 **기준월을 바꿨을 때도** 다시 불러온다.
+#      (전에는 한 번만 복원해서, 8월로 바꿔도 7월 결과가 그대로 남아 있었다)
+_out_now = st.session_state.get("out")
+_stale = (_out_now is None) or (_out_now.get("period") != period)
+if _stale and st.session_state.get("restored_for") != period:
+    st.session_state["restored_for"] = period
+    if _out_now is not None:
+        st.session_state.pop("out", None)        # 다른 달 결과가 남지 않게
+        st.session_state.pop("calc_snapshot", None)
+        st.session_state.pop("manual_cost", None)
     _saved = load_month_files(period)
     if _saved and cost:
         _snap = {
@@ -816,13 +852,20 @@ if not st.session_state.get("out") and not st.session_state.get("restore_done"):
         if _ok:
             st.session_state["calc_snapshot"] = _snap
             st.session_state["restored_from_save"] = True
-            go("result")
+            if st.session_state.get("view") != "input":
+                go("result")
             st.rerun()
+    else:
+        st.session_state["no_data_for"] = period    # 그 달 자료가 없다
 
 VIEW = st.session_state.setdefault("view", "input")
 
 if VIEW == "result" and not st.session_state.get("out"):
+    _miss = st.session_state.get("no_data_for")
     st.session_state["view"] = VIEW = "input"       # 결과가 없으면 입력 화면
+    if _miss == period:
+        st.warning("**{}** 은 아직 계산한 자료가 없습니다. "
+                   "아래에서 매출 파일을 올리고 **이익률 계산** 을 누르세요.".format(period))
 
 if VIEW == "result":
     _o = st.session_state["out"]

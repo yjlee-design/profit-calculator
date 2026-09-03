@@ -1186,7 +1186,23 @@ if VIEW == "input":
         sample = smp_year.get(period, 0.0)
         st.metric("{} 차감액".format(period), WON.format(sample) + " 원")
 
+        def persist_inputs():
+            """이 달의 카드수수료·샘플비용·채널설정을 보관한다."""
+            if USE_DB:
+                db.save_cards(period, cards_in)
+                db.save_samples(smp_year)
+                db.save_channels(channels)
+                db.save_setting("period", period)
+                return "Supabase"
+            save_config(period, def_sources, def_years, ch_df, cards_in, smp_year,
+                        def_cards_all, def_samples_all)
+            return "입력/설정.xlsx"
+
+        st.session_state["_persist_inputs"] = persist_inputs
+
         st.divider()
+        st.caption("**이익률 계산** 을 누르면 이 값들도 자동으로 그 달에 보관됩니다. "
+                   "계산 없이 값만 남기고 싶을 때 아래 버튼을 쓰세요.")
         if st.button("입력한 값 저장", type="primary",
                      help="설정.xlsx 에 저장됩니다. 다음에 열면 그대로 나오고, 배치(실행.bat)도 같은 값을 씁니다."):
             try:
@@ -1232,6 +1248,15 @@ if VIEW == "input":
         or any(kept.get(ch["name"]) and kept[ch["name"]][1] for ch in channels)
         or any(ch["name"] in _prev for ch in channels))
     if st.button("이익률 계산", type="primary", disabled=not ready, width="stretch"):
+        # 입력한 카드수수료·샘플비용을 이 달에 자동 보관 —
+        # 저장 버튼을 따로 누르지 않아도 새로고침 후에 그대로 남는다
+        _pf = st.session_state.get("_persist_inputs")
+        if _pf is not None:
+            try:
+                _pf()
+                read_config_defaults.clear()
+            except Exception as _e:
+                st.warning("입력값 보관 실패 (계산은 계속합니다) — {}".format(_e))
         snap = take_snapshot()
         st.session_state["calc_snapshot"] = snap
         ok, errs = run_calc(snap)

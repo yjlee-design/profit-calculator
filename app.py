@@ -1346,8 +1346,10 @@ if VIEW == "input":
                                           key="dli_%s" % _p, width="stretch")
 
 # ---------------------------------------------------------------- 결과
+# 결과는 '결과' 화면에서만 그린다.
+# (전에는 out 만 보고 그려서 '데이터 입력' 화면 아래에도 같은 결과가 딸려 나왔다)
 out = st.session_state.get("out")
-if out:
+if VIEW == "result" and out:
     results, total, errs = out["results"], out["total"], out["errs"]
     for e in errs:
         st.warning(e)
@@ -1516,28 +1518,6 @@ if out:
                              alt.Tooltip("이익률:Q", format=".2%"),
                              alt.Tooltip("profit:Q", title="이익액", format=",.0f")]
                 ).properties(height=260, background=SURF)
-                .configure_view(strokeWidth=0), use_container_width=True)
-
-            # ③ 매출과 이익액 — 같은 단위(원)라 한 축에 둘 다 올린다 (이중축 금지)
-            st.markdown("**월별 상품매출 · 이익액**")
-            bars = tot.melt(id_vars="period", value_vars=["sales", "profit"],
-                            var_name="구분", value_name="금액")
-            bars["구분"] = bars["구분"].map({"sales": "상품매출", "profit": "이익액"})
-            st.altair_chart(
-                alt.Chart(bars).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4,
-                                         strokeWidth=2, stroke=SURF).encode(
-                    x=alt.X("period:O", title=None, axis=AX),
-                    xOffset=alt.XOffset("구분:N"),
-                    y=alt.Y("금액:Q", title="원", axis=AX),
-                    color=alt.Color("구분:N", title=None,
-                                    scale=alt.Scale(domain=["상품매출", "이익액"],
-                                                    range=["#2a78d6", "#eb6834"]),
-                                    legend=alt.Legend(orient="top", labelColor=MUTED,
-                                                      labelFontSize=11)),
-                    tooltip=[alt.Tooltip("period:O", title="기준월"),
-                             alt.Tooltip("구분:N"),
-                             alt.Tooltip("금액:Q", format=",.0f")]
-                ).properties(height=270, background=SURF)
                 .configure_view(strokeWidth=0), use_container_width=True)
 
             with st.expander("월별 표로 보기"):

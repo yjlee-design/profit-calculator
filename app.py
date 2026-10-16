@@ -520,6 +520,15 @@ def remember(key, value):
         pass
 
 
+def _ship_key(period, blob):
+    """샘플 배송비 입력칸의 키 — 올린 엑셀 파일마다 다르게.
+       파일이 바뀌면 새 칸이 되어 엑셀의 배송비 합계로 다시 채워지고,
+       같은 파일에서는 직접 고친 값이 유지된다."""
+    import hashlib
+    data = blob[1] if blob and len(blob) > 1 and blob[1] else b""
+    return "smpship_%s_%s" % (period, hashlib.md5(data).hexdigest()[:10])
+
+
 def go(view):
     """메뉴와 화면을 함께 바꾼다.
        라디오는 이미 그려진 뒤라 직접 못 고치므로, 다음 실행에 반영되도록 예약한다.
@@ -853,7 +862,7 @@ if _stale and st.session_state.get("restored_for") != period:
             try:
                 _sr, _ = E.read_samples(io.BytesIO(_sf[1]))
                 _sa = E.match_samples(_sr, period, names, cost)
-                _sh = float(st.session_state.get("smpship_%s" % period, _sa["ship"]))
+                _sh = float(st.session_state.get(_ship_key(period, _sf), _sa["ship"]))
                 _snap["sample_items"] = [("샘플 상품원가(자체부담)", _sa["goods"]),
                                          ("샘플 배송비", _sh)]
                 _snap["sample"] = _sa["goods"] + _sh
@@ -1197,11 +1206,11 @@ if VIEW == "input":
                            "font-weight:700'>{}</div>".format(WON.format(auto["goods"])),
                            unsafe_allow_html=True)
             gc[2].markdown("<div style='padding-top:.55rem'><b>배송비</b>"
-                           "<div style='font-size:.78rem;color:#64748B'>직접 입력</div></div>",
+                           "<div style='font-size:.78rem;color:#64748B'>엑셀 자동 · 수정 가능</div></div>",
                            unsafe_allow_html=True)
             ship_in = gc[3].number_input(
                 "샘플 배송비 " + period, min_value=0.0, value=float(auto["ship"]),
-                step=1000.0, format="%.0f", key="smpship_%s" % period,
+                step=1000.0, format="%.0f", key=_ship_key(period, smp_blob),
                 label_visibility="collapsed",
                 help="파일의 배송비 합계를 채워 두었습니다. 필요하면 고치세요.")
             v_now = float(auto["goods"]) + float(ship_in)

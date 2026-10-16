@@ -543,8 +543,20 @@ def split_period(p, fallback=None):
         return n.year, n.month
 
 
+def kst_now():
+    """한국 시간 기준 현재 시각 (Streamlit Cloud 서버는 UTC 라서 월초에 하루 어긋날 수 있음)"""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Asia/Seoul"))
+    except Exception:
+        from datetime import timedelta, timezone
+        return datetime.now(timezone(timedelta(hours=9)))
+
+
+# 페이지에 들어오면 마지막으로 골랐던 달이 아니라 항상 '이번 달'로 시작한다
 if "period_year" not in st.session_state:
-    _y, _m = split_period(def_period)
+    _today = kst_now()
+    _y, _m = _today.year, _today.month
     st.session_state["period_year"] = _y
     st.session_state["period_month"] = _m
 if "period_override" in st.session_state:            # 월 버튼으로 옮겨온 경우
@@ -552,7 +564,7 @@ if "period_override" in st.session_state:            # 월 버튼으로 옮겨�
     st.session_state["period_year"] = _y
     st.session_state["period_month"] = _m
 
-_now = datetime.now().year
+_now = kst_now().year
 _years = {int(k[:4]) for k in list(def_cards_all) + list(def_samples_all)
           if len(str(k)) >= 4 and str(k)[:4].isdigit()}
 _years |= {_now - 1, _now, _now + 1, st.session_state["period_year"]}

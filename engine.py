@@ -758,6 +758,9 @@ def read_samples(src):
                 "qty": num(_pick(row, col, "qty")) or 1.0,
                 "ship": num(_pick(row, col, "ship")),
                 "price": num(_pick(row, col, "price")),
+                # 상품단가 칸에 값이 적혀 있는지 (0 도 '적힌 것' — 무상으로 본다)
+                "price_set": "price" in col and str(
+                    _pick(row, col, "price") if _pick(row, col, "price") is not None else "").strip() != "",
                 "state": str(_pick(row, col, "state") or "").strip(),
             })
         return out, title
@@ -802,6 +805,21 @@ def match_samples(rows, period, names, cost, own_only=True):
         if own_only and norm(r["gubun"]) != OWN_COST:
             continue
         m = months.setdefault(r["month"], {"rows": 0, "goods": 0.0, "ship": 0.0, "miss": 0})
+        if r.get("price_set"):
+            # 파일에 '상품단가'를 직접 적은 줄은 그 금액을 그대로 쓴다 (0 이면 0원)
+            # (담당자가 계산하는 방식 = 상품단가 + 배송비. 마진율표 원가로 다시 찾지 않음)
+            amount = float(r["price"] or 0.0)
+            m["rows"] += 1
+            m["ship"] += r["ship"]
+            m["goods"] += amount
+            if r["month"] != period:
+                continue
+            ship += r["ship"]
+            goods += amount
+            items.append({"name": r["name"], "opt": r["opt"], "qty": r["qty"],
+                          "unit": amount, "amount": amount, "code": "", "how": "파일 단가"})
+            continue
+        # 상품단가가 비어 있는 줄만 기준 파일(마진율표)에서 원가를 찾는다
         unit, code, how = lookup_sample_cost(r["name"], r["opt"], names, cost)
         mult = loose_count(r["opt"]) or 1
         amount = unit * mult * (r["qty"] or 1)

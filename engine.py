@@ -790,7 +790,12 @@ def lookup_sample_cost(name, opt, names, cost):
     return 0.0, "", ""
 
 
-def match_samples(rows, period, names, cost, own_only=True):
+def sample_key(name, opt):
+    """샘플 수기 원가를 기억할 때 쓰는 키 (상품명 + 옵션명, 공백·대소문자 정리)"""
+    return "{}␟{}".format(norm(name), norm(opt))
+
+
+def match_samples(rows, period, names, cost, own_only=True, manual=None):
     """샘플 줄 → 기준월 집계.
        반환 dict:
          items    매칭된 줄 [{name, opt, qty, unit, amount, code, how}]
@@ -821,24 +826,31 @@ def match_samples(rows, period, names, cost, own_only=True):
             continue
         # 상품단가가 비어 있는 줄만 기준 파일(마진율표)에서 원가를 찾는다
         unit, code, how = lookup_sample_cost(r["name"], r["opt"], names, cost)
+        skey = sample_key(r["name"], r["opt"])
+        found = bool(unit)
+        if not found and manual and manual.get(skey) is not None:
+            # 기준 파일에 없을 때만 화면에서 직접 넣어 기억해 둔 원가를 쓴다 (0원도 인정)
+            unit, code, how = float(manual[skey]), "", "직접입력(기억)"
+            found = True
         mult = loose_count(r["opt"]) or 1
         amount = unit * mult * (r["qty"] or 1)
         m["rows"] += 1
         m["ship"] += r["ship"]
-        if unit:
+        if found:
             m["goods"] += amount
         else:
             m["miss"] += 1
         if r["month"] != period:
             continue
         ship += r["ship"]
-        if unit:
+        if found:
             goods += amount
             items.append({"name": r["name"], "opt": r["opt"], "qty": r["qty"],
-                          "unit": unit, "amount": amount, "code": code, "how": how})
+                          "unit": unit, "amount": amount, "code": code, "how": how,
+                          "key": skey})
         else:
             missing.append({"name": r["name"], "opt": r["opt"], "qty": r["qty"],
-                            "price": r["price"]})
+                            "price": r["price"], "key": skey})
     return {"items": items, "missing": missing, "goods": goods, "ship": ship,
             "months": months}
 

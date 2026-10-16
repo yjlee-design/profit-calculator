@@ -390,6 +390,16 @@ def delete_overrides(codes):
     return n
 
 
+def delete_fee_overrides(codes):
+    if not codes:
+        return 0
+    with connect() as cn, cn.cursor() as cur:
+        cur.execute("delete from fee_override where code = any(%s)", (list(codes),))
+        n = cur.rowcount
+        cn.commit()
+    return n
+
+
 def save_cards(period, cards):
     """그 달의 카드수수료만 갈아끼운다. cards: [(결제수단, 금액, 요율), ...]"""
     with connect() as cn, cn.cursor() as cur:

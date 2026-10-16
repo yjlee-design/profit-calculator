@@ -270,9 +270,10 @@ def save_config(period, sources, years, ch_df, cards_now, smp_year, cards_all, s
     wb.save(CONFIG)
 
 
-def append_overrides(typed, names):
+def append_overrides(typed, names, force=False):
     """화면에서 넣은 원가를 원가보정.xlsx [원가보정] 시트에 추가/갱신한다.
-       우선적용은 X (기준 파일에 값이 없을 때만 쓰임)."""
+       force=False → 우선적용 X (기준 파일에 값이 없을 때만 쓰임)
+       force=True  → 우선적용 O (결과 화면에서 직접 고친 값 — 기준 파일보다 우선)"""
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -314,14 +315,69 @@ def append_overrides(typed, names):
         c = ws.cell(r, col["cost"], float(v))
         c.number_format, c.fill = "#,##0", IN
         if "force" in col:
-            fc = ws.cell(r, col["force"], "X")
+            fc = ws.cell(r, col["force"], "O" if force else "X")
             fc.alignment = Alignment(horizontal="center")
             fc.fill = IN
         if "name" in col and nm:
             ws.cell(r, col["name"], nm)
         if "note" in col:
-            ws.cell(r, col["note"], "{} 화면에서 직접 입력".format(today))
+            ws.cell(r, col["note"], "{} 화면에서 직접 {}".format(today, "수정" if force else "입력"))
         n += 1
+    wb.save(OVERRIDE)
+    return n
+
+
+def append_fee_overrides(typed):
+    """화면에서 고친 셀러수수료율을 원가보정.xlsx [셀러수수료보정] 시트에 추가/갱신한다."""
+    import openpyxl
+    from openpyxl.styles import Font
+    wb = openpyxl.load_workbook(OVERRIDE) if OVERRIDE.exists() else openpyxl.Workbook()
+    if not OVERRIDE.exists():
+        wb.active.title = "원가보정"
+        for i, h in enumerate(["상품코드", "원가", "우선적용", "품목명(참고)", "채널", "비고"], 1):
+            wb.active.cell(5, i, h).font = Font(bold=True)
+    if "셀러수수료보정" in wb.sheetnames:
+        ws = wb["셀러수수료보정"]
+        hr, col = E.find_header(ws, {"code": ["상품코드"], "fee": ["셀러수수료"]})
+    else:
+        hr, col = None, None
+    if hr is None:
+        ws = wb.create_sheet("셀러수수료보정") if "셀러수수료보정" not in wb.sheetnames else ws
+        ws.cell(1, 1, "상품코드").font = Font(bold=True)
+        ws.cell(1, 2, "셀러수수료").font = Font(bold=True)
+        hr, col = 1, {"code": 1, "fee": 2}
+    where = {E.code_key(ws.cell(r, col["code"]).value): r
+             for r in range(hr + 1, ws.max_row + 1) if ws.cell(r, col["code"]).value}
+    nxt = ws.max_row + 1
+    for k, v in typed.items():
+        r = where.get(k)
+        if r is None:
+            r, nxt = nxt, nxt + 1
+            ws.cell(r, col["code"], k)
+        ws.cell(r, col["fee"], float(v)).number_format = "0.00%"
+    wb.save(OVERRIDE)
+    return len(typed)
+
+
+def remove_file_overrides(cost_codes, fee_codes):
+    """원가보정.xlsx 에서 해당 코드 줄을 지운다 (되돌리기)"""
+    import openpyxl
+    if not OVERRIDE.exists():
+        return 0
+    wb = openpyxl.load_workbook(OVERRIDE)
+    n = 0
+    for sheet, codes, al in (("원가보정", cost_codes, {"code": ["상품코드"]}),
+                             ("셀러수수료보정", fee_codes, {"code": ["상품코드"]})):
+        if not codes or sheet not in wb.sheetnames:
+            continue
+        ws = wb[sheet]
+        hr, col = E.find_header(ws, al)
+        if hr is None:
+            continue
+        for r in range(ws.max_row, hr, -1):
+            if E.code_key(ws.cell(r, col["code"]).value) in codes:
+                ws.delete_rows(r)
+                n += 1
     wb.save(OVERRIDE)
     return n
 
@@ -518,6 +574,46 @@ def remember(key, value):
         db.save_setting(key, value)
     except Exception:
         pass
+
+
+SAMPLE_MANUAL_FILE = BASE / "입력" / "샘플원가_직접입력.json"
+SAMPLE_MANUAL_KEY = "sample_manual_cost"
+
+
+def load_sample_manual():
+    """샘플 '원가 못 찾음' 품목에 직접 넣어 기억해 둔 원가 {상품명␟옵션명: 원가}"""
+    import json
+    if "sample_manual" in st.session_state:
+        return st.session_state["sample_manual"]
+    data = {}
+    try:
+        if db.enabled():
+            raw = db.get_setting(SAMPLE_MANUAL_KEY)
+            data = json.loads(raw) if raw else {}
+        elif SAMPLE_MANUAL_FILE.exists():
+            data = json.loads(SAMPLE_MANUAL_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    data = {k: float(v) for k, v in (data or {}).items() if v is not None}
+    st.session_state["sample_manual"] = data
+    return data
+
+
+def save_sample_manual(data):
+    """직접 넣은 샘플 원가를 보관한다 (DB 가 있으면 DB, 없으면 입력/샘플원가_직접입력.json)"""
+    import json
+    data = {k: float(v) for k, v in data.items() if v is not None}
+    text = json.dumps(data, ensure_ascii=False)
+    if db.enabled():
+        db.save_setting(SAMPLE_MANUAL_KEY, text)
+        where = "Supabase"
+    else:
+        SAMPLE_MANUAL_FILE.parent.mkdir(exist_ok=True)
+        SAMPLE_MANUAL_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                                      encoding="utf-8")
+        where = "입력/샘플원가_직접입력.json"
+    st.session_state["sample_manual"] = data
+    return where
 
 
 def _ship_key(period, blob):
@@ -861,7 +957,8 @@ if _stale and st.session_state.get("restored_for") != period:
         if _sf and _sf[1] and cost:
             try:
                 _sr, _ = E.read_samples(io.BytesIO(_sf[1]))
-                _sa = E.match_samples(_sr, period, names, cost)
+                _sa = E.match_samples(_sr, period, names, cost,
+                                      manual=load_sample_manual())
                 _sh = float(st.session_state.get(_ship_key(period, _sf), _sa["ship"]))
                 _snap["sample_items"] = [("샘플 상품원가(자체부담)", _sa["goods"]),
                                          ("샘플 배송비", _sh)]
@@ -1139,7 +1236,8 @@ if VIEW == "input":
             else:
                 try:
                     _srows, _ssheet = E.read_samples(io.BytesIO(smp_blob[1]))
-                    auto = E.match_samples(_srows, period, names, cost)
+                    auto = E.match_samples(_srows, period, names, cost,
+                                           manual=load_sample_manual())
                 except Exception as e:
                     st.error("샘플 파일을 읽지 못했습니다 — {}".format(e))
 
@@ -1156,16 +1254,71 @@ if VIEW == "input":
             _m2.metric("파일의 배송비 합계", WON.format(auto["ship"]) + " 원")
             _m3.metric("원가 매칭", "{} / {} 건".format(n_ok, n_ok + n_no),
                        help="상품명+옵션명으로 기준 파일에서 찾은 건수")
+            smp_manual = load_sample_manual()
             if n_no:
                 st.warning("**{}건**은 기준 파일에서 원가를 찾지 못했습니다. "
-                           "아래 목록을 확인하세요.".format(n_no))
-                with st.expander("원가를 못 찾은 {}건 보기".format(n_no)):
-                    st.dataframe(pd.DataFrame(
-                        [{"상품명": m["name"], "옵션명": m["opt"], "수량": m["qty"],
-                          "파일에 적힌 단가": m["price"]} for m in auto["missing"]]),
-                        width="stretch", hide_index=True)
-                    st.caption("상품명·옵션명이 기준 파일과 다르면 못 찾습니다. "
-                               "기준 파일에 등록하거나, 아래 금액을 직접 고쳐 넣으세요.")
+                           "아래 `원가(직접입력)` 칸에 1개당 원가를 넣고 "
+                           "[입력한 원가 기억하기] 를 누르세요.".format(n_no))
+                with st.expander("원가를 못 찾은 {}건 — 직접 입력".format(n_no), expanded=True):
+                    # 같은 상품명+옵션명은 한 줄로 모아 보여준다
+                    _grp = {}
+                    for mm_ in auto["missing"]:
+                        g = _grp.setdefault(mm_["key"], {"상품명": mm_["name"], "옵션명": mm_["opt"],
+                                                        "수량": 0.0, "_key": mm_["key"]})
+                        g["수량"] += mm_["qty"] or 1
+                    _sdf = pd.DataFrame([{**g, "원가(직접입력)": None} for g in _grp.values()])
+                    _sdf["원가(직접입력)"] = pd.to_numeric(_sdf["원가(직접입력)"], errors="coerce")
+                    smiss_df = st.data_editor(
+                        _sdf, width="stretch", hide_index=True, key="smp_miss_%s_%s" % (period, hash(tuple(sorted(smp_manual.items())))),
+                        disabled=["상품명", "옵션명", "수량"],
+                        column_order=["상품명", "옵션명", "수량", "원가(직접입력)"],
+                        column_config={
+                            "수량": st.column_config.NumberColumn(format="%d"),
+                            "원가(직접입력)": st.column_config.NumberColumn(
+                                format="%d", min_value=0.0, step=100.0, default=None,
+                                help="1개당 원가. 수량은 자동으로 곱해집니다. 0 을 넣으면 0원으로 확정."),
+                        })
+                    s_typed = {}
+                    for _i, r in smiss_df.iterrows():
+                        v = r["원가(직접입력)"]
+                        if v is None or pd.isna(v):
+                            continue
+                        s_typed[r["_key"]] = float(v)
+                    st.caption("넣은 원가는 **기억해 두었다가 다른 달·다음 파일에도 자동으로** 씁니다. "
+                               "나중에 기준 파일(마진율표)에 그 품목이 올라오면 **기준 파일 원가가 우선**합니다.")
+                    if st.button("입력한 원가 기억하기", type="primary", disabled=not s_typed,
+                                 key="smp_manual_save_%s" % period, width="stretch"):
+                        try:
+                            where = save_sample_manual({**smp_manual, **s_typed})
+                            st.success("{} 에 {}건 기억했습니다.".format(where, len(s_typed)))
+                            st.rerun()
+                        except Exception as e:
+                            st.error("저장 실패: {}".format(e))
+            if smp_manual:
+                _used = {i["key"] for i in auto["items"] if i["how"] == "직접입력(기억)"}
+                _matched = {i["key"] for i in auto["items"] if i["how"] != "직접입력(기억)"}
+                with st.expander("직접 입력해 둔 샘플 원가 {}건 — 고치기·지우기".format(len(smp_manual))):
+                    _kdf = pd.DataFrame([{
+                        "상품명": k.split("␟")[0], "옵션명": k.split("␟")[-1],
+                        "원가": v,
+                        "상태": ("기준 파일 원가 사용 중" if k in _matched
+                                 else "이번 달 적용" if k in _used else "대기"),
+                        "지우기": False, "_key": k} for k, v in sorted(smp_manual.items())])
+                    kept_df = st.data_editor(
+                        _kdf, width="stretch", hide_index=True, key="smp_manual_edit_%s_%s" % (period, hash(tuple(sorted(smp_manual.items())))),
+                        disabled=["상품명", "옵션명", "상태"],
+                        column_order=["상품명", "옵션명", "원가", "상태", "지우기"],
+                        column_config={"원가": st.column_config.NumberColumn(
+                            format="%d", min_value=0.0, step=100.0)})
+                    st.caption("‘기준 파일 원가 사용 중’ 은 마진율표에 등록돼서 직접 입력값을 쓰지 않는 품목입니다.")
+                    if st.button("변경 저장", key="smp_manual_upd_%s" % period):
+                        new = {r["_key"]: float(r["원가"]) for _i, r in kept_df.iterrows()
+                               if not r["지우기"] and r["원가"] is not None and not pd.isna(r["원가"])}
+                        try:
+                            save_sample_manual(new)
+                            st.rerun()
+                        except Exception as e:
+                            st.error("저장 실패: {}".format(e))
             with st.expander("이 파일이 담고 있는 달 · 매칭 내역"):
                 st.dataframe(pd.DataFrame(
                     [{"월": mm, "자체부담 줄수": v["rows"], "상품원가": v["goods"],
@@ -1772,16 +1925,131 @@ if VIEW == "result" and out:
                 row["이익률"] = p / g["amount"] if g["amount"] else 0.0
                 rows.append(row)
             df = pd.DataFrame(rows)
+            if "셀러수수료율" in df.columns:
+                # 화면에서는 % 숫자로 고치게 한다 (15 = 15%)
+                df["셀러수수료율(%)"] = (df["셀러수수료율"].astype(float) * 100).round(4)
+                df = df.drop(columns=["셀러수수료율"])
             only_bad = st.checkbox("원가 미매칭만 보기", key="flt_" + ch["name"])
             if only_bad:
                 df = df[df["원가출처"] == "미매칭"]
+            df = df.reset_index(drop=True)
+            cols = [c for c in ["품목그룹3", "상품코드", "품목명[규격]", "수량", "판매액", "원가",
+                                "원가합", "원가출처", "셀러수수료율(%)", "요율출처", "셀러수수료",
+                                "이익액", "이익률"] if c in df.columns]
             fmt = {c: st.column_config.NumberColumn(format="%d")
-                   for c in ["수량", "판매액", "원가", "원가합", "셀러수수료", "이익액"] if c in df.columns}
+                   for c in ["수량", "판매액", "원가합", "셀러수수료", "이익액"] if c in df.columns}
+            fmt["원가"] = st.column_config.NumberColumn(
+                format="%d", min_value=0.0, step=10.0, help="고치면 기억해 두었다가 다음 계산에도 씁니다")
             fmt["이익률"] = st.column_config.NumberColumn(format="percent")
-            if "셀러수수료율" in df.columns:
-                fmt["셀러수수료율"] = st.column_config.NumberColumn(format="percent")
-            st.dataframe(df, width="stretch", hide_index=True,
-                         column_config=fmt, height=460)
+            if "셀러수수료율(%)" in df.columns:
+                fmt["셀러수수료율(%)"] = st.column_config.NumberColumn(
+                    format="%.2f%%", min_value=0.0, max_value=100.0, step=0.1,
+                    help="15 를 넣으면 15% 입니다. 고치면 기억해 두었다가 다음 계산에도 씁니다")
+            st.caption("✏️ **원가**·**셀러수수료율** 칸을 고친 뒤 아래 [수정한 값 기억 · 다시 계산] 을 누르면, "
+                       "고친 값은 **기준 파일보다 우선** 적용되고 다음 달에도 계속 쓰입니다.")
+            ed = st.data_editor(
+                df[cols], width="stretch", hide_index=True, column_config=fmt, height=460,
+                disabled=[c for c in cols if c not in ("원가", "셀러수수료율(%)")],
+                key="ed_%s_%s_%d" % (ch["name"], out.get("period"), st.session_state.get("ed_ver", 0)))
+
+            # 바뀐 칸만 골라낸다 (상품코드 기준)
+            cost_new, fee_new, nm_new = {}, {}, {}
+            for i in range(len(df)):
+                k = E.code_key(df.at[i, "상품코드"])
+                if not k:
+                    continue
+                v0, v1 = df.at[i, "원가"], ed.at[i, "원가"]
+                if v1 is not None and not pd.isna(v1) and abs(float(v1) - float(v0 or 0)) > 1e-9:
+                    cost_new[k] = float(v1)
+                    nm_new[k] = (str(df.at[i, "상품코드"]), str(df.at[i, "품목명[규격]"]))
+                if "셀러수수료율(%)" in df.columns:
+                    f0, f1 = df.at[i, "셀러수수료율(%)"], ed.at[i, "셀러수수료율(%)"]
+                    if f1 is not None and not pd.isna(f1) and abs(float(f1) - float(f0 or 0)) > 1e-9:
+                        fee_new[k] = float(f1) / 100.0
+            if cost_new or fee_new:
+                st.info("고친 값 — 원가 {}건 · 셀러수수료율 {}건".format(len(cost_new), len(fee_new)))
+            if st.button("수정한 값 기억 · 다시 계산", type="primary",
+                         disabled=not (cost_new or fee_new), key="ed_save_%s" % ch["name"]):
+                try:
+                    if USE_DB:
+                        if cost_new:
+                            db.upsert_overrides({k: (v, True) for k, v in cost_new.items()},
+                                                nm_new, note="결과 화면에서 직접 수정")
+                        if fee_new:
+                            db.upsert_fee_overrides(fee_new, note="결과 화면에서 직접 수정")
+                    else:
+                        if cost_new:
+                            append_overrides(cost_new, nm_new, force=True)
+                        if fee_new:
+                            append_fee_overrides(fee_new)
+                        load_override_cached.clear()
+                    snap_ = st.session_state.get("calc_snapshot")
+                    if snap_:
+                        snap_["override"] = dict(snap_["override"])
+                        snap_["fee_override"] = dict(snap_["fee_override"])
+                        for k, v in cost_new.items():
+                            snap_["override"][k] = (v, True)
+                        snap_["fee_override"].update(fee_new)
+                        # 이 코드에 남아 있던 '이번 계산에만' 값은 지운다 (새 값이 이기도록)
+                        _mc = st.session_state.get("manual_cost", {})
+                        for k in cost_new:
+                            _mc.pop(k, None)
+                    st.session_state["ed_ver"] = st.session_state.get("ed_ver", 0) + 1
+                    ok, _e = run_calc()
+                    if ok:
+                        st.rerun()
+                except PermissionError:
+                    st.error("원가보정.xlsx 가 엑셀에서 열려 있습니다. 닫고 다시 시도하세요.")
+                except Exception as e:
+                    st.error("저장 실패: {}".format(e))
+
+            # 직접 수정해 둔 값 되돌리기
+            _snap_now = st.session_state.get("calc_snapshot") or {}
+            _ov, _fo = _snap_now.get("override", {}), _snap_now.get("fee_override", {})
+            _mine = []
+            for g in res["goods"]:
+                k = g["code"]
+                if (k in _ov and _ov[k][1]) or k in _fo:
+                    _mine.append({"상품코드": g["code_raw"], "품목명[규격]": g["name"],
+                                  "고친 원가": _ov[k][0] if k in _ov and _ov[k][1] else None,
+                                  "기준 원가": g.get("cost_master"),
+                                  "고친 요율(%)": _fo[k] * 100 if k in _fo else None,
+                                  "되돌리기": False, "_k": k})
+            if _mine:
+                with st.expander("직접 고친 값 {}건 — 되돌리기".format(len(_mine))):
+                    _rdf = st.data_editor(
+                        pd.DataFrame(_mine), width="stretch", hide_index=True,
+                        key="ed_undo_%s_%d" % (ch["name"], st.session_state.get("ed_ver", 0)),
+                        disabled=["상품코드", "품목명[규격]", "고친 원가", "기준 원가", "고친 요율(%)"],
+                        column_order=["상품코드", "품목명[규격]", "고친 원가", "기준 원가",
+                                      "고친 요율(%)", "되돌리기"],
+                        column_config={"고친 원가": st.column_config.NumberColumn(format="%d"),
+                                       "기준 원가": st.column_config.NumberColumn(format="%d"),
+                                       "고친 요율(%)": st.column_config.NumberColumn(format="%.2f%%")})
+                    _undo = [r["_k"] for _i, r in _rdf.iterrows() if r["되돌리기"]]
+                    st.caption("되돌리면 기준 파일(마진율표) 값으로 다시 계산합니다.")
+                    if st.button("선택한 항목 되돌리기", disabled=not _undo,
+                                 key="ed_undo_btn_%s" % ch["name"]):
+                        try:
+                            c_codes = [k for k in _undo if k in _ov and _ov[k][1]]
+                            f_codes = [k for k in _undo if k in _fo]
+                            if USE_DB:
+                                db.delete_overrides(c_codes)
+                                db.delete_fee_overrides(f_codes)
+                            else:
+                                remove_file_overrides(set(c_codes), set(f_codes))
+                                load_override_cached.clear()
+                            if _snap_now:
+                                _snap_now["override"] = {k: v for k, v in _ov.items() if k not in c_codes}
+                                _snap_now["fee_override"] = {k: v for k, v in _fo.items() if k not in f_codes}
+                            st.session_state["ed_ver"] = st.session_state.get("ed_ver", 0) + 1
+                            ok, _e = run_calc()
+                            if ok:
+                                st.rerun()
+                        except PermissionError:
+                            st.error("원가보정.xlsx 가 엑셀에서 열려 있습니다. 닫고 다시 시도하세요.")
+                        except Exception as e:
+                            st.error("되돌리기 실패: {}".format(e))
             if res["delivery"]:
                 st.caption("배송비 (이익 계산 제외) — {} 원".format(
                     WON.format(res["delivery_sales"])))

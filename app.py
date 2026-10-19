@@ -1775,24 +1775,17 @@ if VIEW == "result" and out:
                     continue                       # 안 넣은 칸은 건너뛴다
                 typed[E.code_key(r["상품코드"])] = float(E.num(raw_v))
 
-            st.caption("넣은 원가는 **기억해 두었다가 다음 달에도 자동으로 씁니다.** "
-                       "나중에 기준 파일에 그 코드가 올라오면 **기준 파일 값이 우선**하고 "
-                       "여기 값은 자동으로 물러납니다. (우선적용 X)")
-            b1, b2 = st.columns([2, 1])
-            if b1.button("입력한 원가로 다시 계산 · 기억하기", type="primary",
-                         disabled=not typed, width="stretch",
-                         help="다음 달부터는 입력하지 않아도 이 원가가 쓰입니다"):
+            def _remember(vals, names, note):
+                """원가를 기억(Supabase / 원가보정.xlsx)하고 다시 계산"""
                 try:
-                    names = {E.code_key(r["상품코드"]): (str(r["상품코드"]), str(r["품목명[규격]"]))
-                             for _i, r in miss_df.iterrows()}
                     if USE_DB:
-                        n = db.upsert_overrides({k: (v, False) for k, v in typed.items()},
-                                                names, note="화면에서 직접 입력")
+                        n = db.upsert_overrides({k: (v, False) for k, v in vals.items()},
+                                                names, note=note)
                         where = "Supabase"
                     else:
-                        n = append_overrides(typed, names)
+                        n = append_overrides(vals, names)
                         where = "원가보정.xlsx"
-                    st.session_state["manual_cost"] = {**manual, **typed}
+                    st.session_state["manual_cost"] = {**manual, **vals}
                     load_override_cached.clear()
                     st.success("{} 에 {}건 기억했습니다. 다시 계산합니다.".format(where, n))
                     ok, _e = run_calc()
@@ -1800,12 +1793,88 @@ if VIEW == "result" and out:
                         st.rerun()
                 except PermissionError:
                     st.error("원가보정.xlsx 가 엑셀에서 열려 있습니다. 닫고 다시 시도하세요.")
+
+            st.caption("넣은 원가는 **기억해 두었다가 다음 달에도 자동으로 씁니다.** "
+                       "나중에 기준 파일에 그 코드가 올라오면 **기준 파일 값이 우선**하고 "
+                       "여기 값은 자동으로 물러납니다. (우선적용 X)")
+            b1, b2 = st.columns([2, 1])
+            if b1.button("입력한 원가로 다시 계산 · 기억하기", type="primary",
+                         disabled=not typed, width="stretch",
+                         help="다음 달부터는 입력하지 않아도 이 원가가 쓰입니다"):
+                _remember(typed,
+                          {E.code_key(r["상품코드"]): (str(r["상품코드"]), str(r["품목명[규격]"]))
+                           for _i, r in miss_df.iterrows()},
+                          "화면에서 직접 입력")
             if b2.button("이번 계산에만 쓰기", disabled=not typed, width="stretch",
                          help="기억하지 않고 이번 결과에만 반영합니다"):
                 st.session_state["manual_cost"] = {**manual, **typed}
                 ok, _e = run_calc()
                 if ok:
                     st.rerun()
+
+            # ── 엑셀로 한꺼번에: 내려받아 원가를 채운 뒤 다시 올리기 ──
+            st.write("")
+            st.markdown("**엑셀로 한꺼번에 넣기** — 미매칭 목록을 내려받아 "
+                        "`원가(직접입력)` 칸을 채운 뒤 그대로 올리세요.")
+            x1, x2 = st.columns([1, 2])
+            _xbuf = io.BytesIO()
+            with pd.ExcelWriter(_xbuf, engine="openpyxl") as _xw:
+                _mdf.to_excel(_xw, index=False, sheet_name="미매칭")
+                _ws = _xw.sheets["미매칭"]
+                for _col, _w in zip("ABCDEF", [16, 22, 48, 8, 14, 16]):
+                    _ws.column_dimensions[_col].width = _w
+            x1.download_button(
+                "미매칭 목록 엑셀 내려받기", data=_xbuf.getvalue(),
+                file_name="{} 미매칭 원가입력.xlsx".format(out["period"]),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch")
+            up_miss = x2.file_uploader("원가를 채운 엑셀 올리기", type=["xlsx", "xlsm", "csv"],
+                                       key="miss_upload", label_visibility="collapsed")
+            if up_miss is not None:
+                try:
+                    if up_miss.name.lower().endswith(".csv"):
+                        _udf = pd.read_csv(io.BytesIO(up_miss.getvalue()), dtype={"상품코드": str})
+                    else:
+                        _udf = pd.read_excel(io.BytesIO(up_miss.getvalue()), dtype={"상품코드": str})
+                    _udf.columns = [str(c).strip() for c in _udf.columns]
+                    _ccol = "원가(직접입력)" if "원가(직접입력)" in _udf.columns else next(
+                        (c for c in _udf.columns if "원가" in c), None)
+                    if "상품코드" not in _udf.columns or _ccol is None:
+                        st.error("`상품코드` 와 `원가(직접입력)` 열이 있어야 합니다. "
+                                 "내려받은 파일을 그대로 쓰세요.")
+                    else:
+                        up_vals, up_names = {}, {}
+                        for _i, r in _udf.iterrows():
+                            _code, _v = r["상품코드"], r[_ccol]
+                            if _code is None or pd.isna(_code) or not str(_code).strip():
+                                continue
+                            if isinstance(_v, str):
+                                _v = _v.replace(",", "").replace("원", "").strip() or None
+                            _v = pd.to_numeric(_v, errors="coerce")
+                            if _v is None or pd.isna(_v) or _v < 0:
+                                continue           # 빈칸은 '아직 안 넣음'
+                            _k = E.code_key(_code)
+                            up_vals[_k] = float(_v)
+                            up_names[_k] = (str(_code).strip(),
+                                            str(r.get("품목명[규격]", "") or ""))
+                        if not up_vals:
+                            st.warning("원가가 채워진 줄이 없습니다. `원가(직접입력)` 칸을 채워 주세요.")
+                        else:
+                            _miss_keys = {_k for _k, *_ in miss}
+                            _hit = sum(1 for _k in up_vals if _k in _miss_keys)
+                            st.info("엑셀에서 원가 {}건을 읽었습니다 (지금 미매칭 {}건 중 {}건 해당)."
+                                    .format(len(up_vals), len(miss), _hit))
+                            st.dataframe(pd.DataFrame(
+                                [{"상품코드": up_names[_k][0], "품목명[규격]": up_names[_k][1],
+                                  "원가": v} for _k, v in up_vals.items()]),
+                                width="stretch", hide_index=True, height=200,
+                                column_config={"원가": st.column_config.NumberColumn(format="%d")})
+                            if st.button("엑셀 원가로 다시 계산 · 기억하기", type="primary",
+                                         width="stretch", key="miss_upload_apply",
+                                         help="다음 달부터는 입력하지 않아도 이 원가가 쓰입니다"):
+                                _remember(up_vals, up_names, "엑셀 업로드로 입력")
+                except Exception as _ex:
+                    st.error("엑셀을 읽지 못했습니다: {}".format(_ex))
         else:
             st.success("모든 상품의 원가를 찾았습니다.")
         if manual:

@@ -50,6 +50,18 @@ if not auth.require_password():
 USE_DB = db.enabled()
 
 
+# Supabase 읽기 캐시 — 화면을 누를 때마다(Streamlit 은 매번 처음부터 다시 실행)
+# DB 에 새로 접속해 같은 파일을 또 받아오지 않도록 결과를 잠시 기억해 둔다.
+# 저장·계산·삭제 뒤에는 db_fresh() 로 비워서 최신 값이 바로 보이게 한다.
+@st.cache_data(ttl=600, show_spinner=False)
+def db_read(fn_name, *args):
+    return getattr(db, fn_name)(*args)
+
+
+def db_fresh():
+    db_read.clear()
+
+
 
 # ---------------------------------------------------------------- 설정 읽기/쓰기
 @st.cache_data(show_spinner=False)
@@ -388,6 +400,7 @@ def save_report(period, xlsx, summary=""):
     if db.enabled():
         try:
             db.save_month_report(period, fname, xlsx, summary)
+            db_fresh()
             return
         except Exception:
             pass
@@ -402,7 +415,7 @@ def load_report(period):
     """(파일명, bytes, 요약, 저장시각) 또는 None"""
     if db.enabled():
         try:
-            got = db.load_month_report(period)
+            got = db_read("load_month_report", period)
             if got:
                 return got
         except Exception:
@@ -418,7 +431,7 @@ def load_report(period):
 def list_reports():
     if db.enabled():
         try:
-            return db.list_month_reports()
+            return db_read("list_month_reports")
         except Exception:
             pass
     import datetime as _dt, re as _re
@@ -442,6 +455,7 @@ def save_month_files(period, files):
     if db.enabled():
         try:
             db.save_month_files(period, files)
+            db_fresh()
             return
         except Exception:
             pass
@@ -460,7 +474,7 @@ def load_month_files(period):
     """{채널명: (파일명, bytes)}  없으면 {}"""
     if db.enabled():
         try:
-            got = db.load_month_files(period)
+            got = db_read("load_month_files", period)
             if got:
                 return got
         except Exception:
@@ -493,6 +507,7 @@ def save_history(period, results, total):
     if db.enabled():
         try:
             db.save_month_result(period, results, total)
+            db_fresh()
             return
         except Exception:
             pass
@@ -512,7 +527,7 @@ def save_history(period, results, total):
 def load_history():
     if db.enabled():
         try:
-            return db.load_month_results()
+            return db_read("load_month_results")
         except Exception:
             pass
     try:
@@ -813,11 +828,13 @@ def render_source_panel():
                               help="기준 파일을 지금 다시 읽습니다")
             if b2.button("상태 새로고침", width="stretch",
                          help="파일이 바뀌었는지만 확인"):
+                db_fresh()
                 st.rerun()
             cur = st.session_state.get("lookups")
             if cur is not None and cur["sig"] != source_sig(up_) and not do_up:
                 st.warning("기준 파일이 바뀌었습니다. **🔄 업데이트** 를 눌러 반영하세요.")
             if do_up:
+                db_fresh()
                 load_sources(up_)
                 st.rerun()
             if src_report:
@@ -834,7 +851,7 @@ st.sidebar.divider()
 ov_bytes, ov_tag = None, ""
 if USE_DB:
     try:
-        override, fee_override = db.load_overrides()
+        override, fee_override = db_read("load_overrides")
     except Exception as e:
         override, fee_override = {}, {}
         st.sidebar.error("보정 읽기 실패: {}".format(e))
@@ -852,7 +869,7 @@ st.sidebar.divider()
 if USE_DB:
     _ls = None
     try:
-        _ls = db.last_sync()
+        _ls = db_read("last_sync")
     except Exception:
         pass
     st.sidebar.success("☁️ Supabase 연결됨")
@@ -1536,7 +1553,8 @@ if VIEW == "result" and out:
     m[2].metric("배송매출", WON.format(total["delivery"]) + " 원",
                 delta="이익 계산 제외", delta_color="off")
     m[3].metric("총이익액", WON.format(total["profit"]) + " 원")
-    m[4].metric("이익률", "{:.2f} %".format(total["margin"] * 100))
+    m[4].metric("이익률", "{:.2f} %".format(total["margin"] * 100)
+                if total["sales"] > 0 else "반품 초과")
     miss = E.missing_rows(results)
     m[5].metric("원가 미매칭", "{}건".format(len(miss)),
                 delta="판매액 " + WON.format(sum(x[4] for x in miss)) + "원",
@@ -1549,6 +1567,18 @@ if VIEW == "result" and out:
     for col, res in zip(ch_cols, results):
         rate_ = res["profit"] / res["sales"] if res["sales"] else 0.0
         tone = "#10B981" if rate_ >= 0.25 else ("#6366F1" if rate_ >= 0.15 else "#F59E0B")
+        # 반품이 판매보다 많아 매출이 0 이하이면 이익률(%)은 뜻이 없다 → '반품 초과'
+        rate_txt = "{:.2f}%".format(rate_ * 100)
+        if res["sales"] <= 0:
+            rate_txt, tone = "반품 초과", "#EF4444"
+        sold = sum(g["amount"] for g in res["goods"] if g["amount"] > 0)
+        back = sum(g["amount"] for g in res["goods"] if g["amount"] < 0)
+        split_html = ""
+        if back:
+            split_html = "".join(
+                "<div style='display:flex;justify-content:space-between;font-size:.76rem;"
+                "color:#94A3B8;margin-bottom:.15rem'><span>{}</span><span>{}</span></div>"
+                .format(n, WON.format(v)) for n, v in (("판매", sold), ("반품", back)))
         cuts = []
         if res["fee"]:
             cuts.append(("셀러수수료", res["fee"]))
@@ -1565,7 +1595,8 @@ if VIEW == "result" and out:
             "padding:1.05rem 1.15rem;box-shadow:0 1px 2px rgba(15,23,42,.04)'>"
             "<div style='font-size:.86rem;font-weight:700;color:#0F172A'>{name}</div>"
             "<div style='font-size:1.75rem;font-weight:700;color:{tone};"
-            "letter-spacing:-.03em;line-height:1.3;margin:.15rem 0 .5rem'>{rate:.2f}%</div>"
+            "letter-spacing:-.03em;line-height:1.3;margin:.15rem 0 .5rem'>{rate}</div>"
+            "{split}"
             "<div style='display:flex;justify-content:space-between;font-size:.8rem;"
             "color:#64748B'><span>상품매출</span><span style='color:#0F172A'>{sales}</span></div>"
             "<div style='display:flex;justify-content:space-between;font-size:.8rem;"
@@ -1577,7 +1608,7 @@ if VIEW == "result" and out:
             "<div style='display:flex;justify-content:space-between;font-size:.75rem;"
             "color:#94A3B8;margin-top:.3rem'><span>배송매출(제외)</span><span>{deli}</span></div>"
             "</div>".format(
-                name=res["ch"]["name"], tone=tone, rate=rate_ * 100,
+                name=res["ch"]["name"], tone=tone, rate=rate_txt, split=split_html,
                 sales=WON.format(res["sales"]), cost=WON.format(res["cost"]),
                 cuts=cut_html, profit=WON.format(res["profit"]),
                 deli=WON.format(res["delivery_sales"])),
@@ -1616,13 +1647,13 @@ if VIEW == "result" and out:
         "구분": r["ch"]["name"], "상품매출": r["sales"], "상품원가": r["cost"],
         "셀러수수료": r["fee"], "카드수수료": r["card"], "샘플비용": r["sample"],
         "이익액": r["profit"],
-        "이익률": r["profit"] / r["sales"] if r["sales"] else 0.0,
+        "이익률": r["profit"] / r["sales"] if r["sales"] > 0 else None,
         "배송매출": r["delivery_sales"],
     } for r in results] + [{
         "구분": "합계", "상품매출": total["sales"], "상품원가": total["cost"],
         "셀러수수료": total["fee"], "카드수수료": total["card"], "샘플비용": total["sample"],
         "이익액": total["profit"],
-        "이익률": total["profit"] / total["sales"] if total["sales"] else 0.0,
+        "이익률": total["profit"] / total["sales"] if total["sales"] > 0 else None,
         "배송매출": total["delivery"],
     }])
     money_cols = ["상품매출", "상품원가", "셀러수수료", "카드수수료", "샘플비용", "이익액", "배송매출"]
@@ -1630,7 +1661,9 @@ if VIEW == "result" and out:
         summary, width="stretch", hide_index=True,
         column_config={**{c: st.column_config.NumberColumn(format="%d") for c in money_cols},
                        "이익률": st.column_config.NumberColumn(format="percent")})
-    st.caption("* 배송 이익 제외 — 배송매출은 원가와 같게 처리하여 이익 0")
+    st.caption("* 배송 이익 제외 — 배송매출은 원가와 같게 처리하여 이익 0"
+               + (" · 이익률이 빈칸이면 반품이 판매보다 많아 상품매출이 0 이하인 경우입니다"
+                  if any(r["sales"] <= 0 for r in results) or total["sales"] <= 0 else ""))
 
     # ---- 월별 추이
     hist = load_history()
@@ -1638,7 +1671,7 @@ if VIEW == "result" and out:
         import altair as alt
         hdf = pd.DataFrame(hist)
         hdf["이익률"] = hdf.apply(
-            lambda r: (r["profit"] / r["sales"]) if r["sales"] else 0.0, axis=1)
+            lambda r: (r["profit"] / r["sales"]) if r["sales"] > 0 else None, axis=1)
         months = sorted(hdf["period"].unique())
 
         if len(months) >= 2:
@@ -1782,6 +1815,7 @@ if VIEW == "result" and out:
                         n = db.upsert_overrides({k: (v, False) for k, v in vals.items()},
                                                 names, note=note)
                         where = "Supabase"
+                        db_fresh()
                     else:
                         n = append_overrides(vals, names)
                         where = "원가보정.xlsx"
@@ -2046,6 +2080,7 @@ if VIEW == "result" and out:
                                                 nm_new, note="결과 화면에서 직접 수정")
                         if fee_new:
                             db.upsert_fee_overrides(fee_new, note="결과 화면에서 직접 수정")
+                        db_fresh()
                     else:
                         if cost_new:
                             append_overrides(cost_new, nm_new, force=True)
@@ -2105,6 +2140,7 @@ if VIEW == "result" and out:
                             if USE_DB:
                                 db.delete_overrides(c_codes)
                                 db.delete_fee_overrides(f_codes)
+                                db_fresh()
                             else:
                                 remove_file_overrides(set(c_codes), set(f_codes))
                                 load_override_cached.clear()

@@ -1551,16 +1551,25 @@ def _pct(x):
 
 
 def _pp(x):
-    return "{:+.1f}%p".format(x * 100)
+    return "{:.1f}%p".format(abs(x) * 100)
+
+
+def _man(x):
+    """읽기 쉬운 금액 — 1만원 이상은 '만원' 단위"""
+    if abs(x) >= 10000:
+        return "{:,.0f}만원".format(x / 10000)
+    return "{:,.0f}원".format(x)
 
 
 def analyze_channel(res, prev=None):
-    """채널 이익률이 왜 이렇게 나왔는지 — 비용 구조, 반품, 상품군별 기여, 전월 대비.
-       prev: 지난달 같은 채널 이력 {sales, cost, fee, card, sample, profit} 또는 None"""
+    """채널 이익률이 왜 이렇게 나왔는지 쉬운 말로 정리한다.
+       prev: 지난달 같은 채널 이력 {sales, cost, fee, card, sample, profit} 또는 None
+       반환: headline · tone · summary · bar · up · down · check · groups · prev"""
     sales, profit = res["sales"], res["profit"]
     base = abs(sales) or 1.0
     rate = profit_rate(profit, sales)
     goods = res["goods"]
+    neg = sales <= 0          # 반품이 판매보다 많으면 %·비중은 뜻이 없어 금액으로 설명한다
 
     # ── 상품군(품목그룹3)별 집계
     grp = {}
@@ -1575,109 +1584,130 @@ def analyze_channel(res, prev=None):
             a["반품액"] += g["amount"]
         if g["cost_src"] == "보정" and g.get("cost_master") is None:
             a["직접입력원가"] = True
-    rows = []
     for a in grp.values():
         a["이익"] = a["판매액"] - a["원가"] - a["수수료"]
         a["이익률"] = profit_rate(a["이익"], a["판매액"])
-        a["매출비중"] = a["판매액"] / base
-        rows.append(a)
-    gdf = pd.DataFrame(rows)
-
-    # ── 이유 문장
-    why = []
-    cost_r = res["cost"] / base
-    fee_r, card_r, smp_r = res["fee"] / base, res["card"] / base, res["sample"] / base
-    parts = [("상품원가", cost_r)]
-    if res["fee"]:
-        parts.append(("셀러수수료", fee_r))
-    if res["card"]:
-        parts.append(("카드수수료", card_r))
-    if res["sample"]:
-        parts.append(("샘플비용", smp_r))
-    sold = sum(g["amount"] for g in goods if g["amount"] > 0)
-    neg = sales <= 0          # 반품이 판매보다 많으면 %·비중은 뜻이 없어 금액으로 설명한다
-    if neg:
-        why.append("반품이 판매({}원)보다 많아 상품매출이 **{}원**입니다. "
-                   "이 달은 이익률(%)보다 **이익 금액**으로 보세요 — 이익 {}원."
-                   .format(WON.format(sold), WON.format(sales), WON.format(profit)))
-    else:
-        why.append("매출 100원 중 " + " · ".join("{} {:.1f}원".format(n, r * 100) for n, r in parts)
-                   + "을 빼고 **{:.1f}원이 이익**으로 남습니다.".format(rate * 100))
-
-    back = [g for g in goods if g["amount"] < 0]
-    if back:
-        b_amt = sum(g["amount"] for g in back)
-        b_profit = sum(g["amount"] - g["cost_sum"] - g["fee_sum"] for g in back)
-        ex = profit_rate(profit - b_profit, sales - b_amt)
-        why.append("반품 {}원 (판매 {}원의 {}). 반품을 빼고 계산하면 이익률은 **{}** "
-                   "→ 반품 때문에 **{}** 달라졌습니다."
-                   .format(WON.format(b_amt), WON.format(sold),
-                           _pct(-b_amt / sold) if sold else "-", _pct(ex), _pp(rate - ex)))
-
-    if not gdf.empty and neg:
-        gdf["매출비중"], gdf["영향"] = None, None
-        for _i, r in gdf[gdf["이익"] < 0].sort_values("이익").head(3).iterrows():
-            why.append("**{}** — {}이익 **{}원**"
-                       .format(r["상품군"],
-                               "반품 {}원 · ".format(WON.format(r["반품액"])) if r["반품액"] else "",
-                               WON.format(r["이익"])))
-        for _i, r in gdf[gdf["이익"] > 0].sort_values("이익", ascending=False).head(2).iterrows():
-            why.append("**{}** — 판매 {}원 · 이익 **{}원** ({})"
-                       .format(r["상품군"], WON.format(r["판매액"]), WON.format(r["이익"]),
-                               _pct(r["이익률"])))
-    elif not gdf.empty:
-        # 영향 = (상품군 이익률 − 채널 이익률) × 매출비중 → 채널 평균을 얼마나 올리고 내렸는지
-        gdf["영향"] = (gdf["이익률"] - rate) * gdf["매출비중"]
-        low = gdf[(gdf["영향"] < -0.005) & (gdf["판매액"] > 0)].sort_values("영향").head(3)
-        for _i, r in low.iterrows():
-            why.append("**{}** — 매출의 {}인데 이익률 {} (채널 평균 {}) → 평균을 **{}** 끌어내림{}"
-                       .format(r["상품군"], _pct(r["매출비중"]), _pct(r["이익률"]), _pct(rate),
-                               _pp(r["영향"]),
-                               " · 직접 넣은 원가 사용" if r["직접입력원가"] else ""))
-        high = gdf[(gdf["영향"] > 0.005) & (gdf["판매액"] > 0)].sort_values(
-            "영향", ascending=False).head(2)
-        for _i, r in high.iterrows():
-            why.append("**{}** — 매출의 {}, 이익률 {} → 평균을 **{}** 끌어올림"
-                       .format(r["상품군"], _pct(r["매출비중"]), _pct(r["이익률"]), _pp(r["영향"])))
+        a["매출비중"] = None if neg else a["판매액"] / base
+        # 영향 = (상품군 이익률 − 채널 이익률) × 매출비중 → 채널 이익률을 얼마나 올리고 내렸는지
+        a["영향"] = None if neg else (a["이익률"] - rate) * a["매출비중"]
+    gdf = pd.DataFrame(list(grp.values()))
     if not gdf.empty:
-        zero = gdf[(gdf["판매액"] > 0) & (gdf["이익"].abs() < 1)]
-        if len(zero):
-            why.append("이익이 0원인 상품군 {}개 (매출 {}원) — 원가가 판매가와 같게 잡혀 있습니다. "
-                       "원가가 맞는지 확인해 보세요.".format(len(zero), WON.format(zero["판매액"].sum())))
+        gdf = gdf.sort_values("판매액", ascending=False)
 
-    n_def = sum(1 for g in goods if g.get("fee_missing"))
-    if n_def:
-        why.append("셀러수수료를 기준 파일에서 못 찾아 **기본율**로 계산한 상품 {}건이 있습니다."
-                   .format(n_def))
-    if res["missing"]:
-        why.append("원가를 못 찾은 상품 {}건은 원가 0원으로 계산돼 **이익이 부풀려져** 있습니다."
-                   .format(len(res["missing"])))
+    up, down, check = [], [], []
+
+    # ── 반품
+    sold = sum(g["amount"] for g in goods if g["amount"] > 0)
+    back = [g for g in goods if g["amount"] < 0]
+    b_amt = sum(g["amount"] for g in back)
+    ex_rate = None
+    if back:
+        b_profit = sum(g["amount"] - g["cost_sum"] - g["fee_sum"] for g in back)
+        ex_rate = profit_rate(profit - b_profit, sales - b_amt)
+        if not neg and rate - ex_rate <= -0.005:
+            down.append("**반품 {}** — 반품이 없었다면 이익률이 {}였습니다 ({} 낮아짐)"
+                        .format(_man(-b_amt), _pct(ex_rate), _pp(rate - ex_rate)))
 
     # ── 지난달 대비
-    prev_rows = None
+    cost_r = res["cost"] / base
+    fee_r, card_r, smp_r = res["fee"] / base, res["card"] / base, res["sample"] / base
+    prev_rows, p_rate = None, None
     if prev and prev.get("sales"):
         pb = abs(prev["sales"]) or 1.0
         p_rate = profit_rate(prev["profit"], prev["sales"])
-        items = [("상품원가율", cost_r, prev["cost"] / pb),
-                 ("셀러수수료율", fee_r, prev["fee"] / pb),
-                 ("카드수수료율", card_r, prev["card"] / pb),
-                 ("샘플비용율", smp_r, prev["sample"] / pb)]
+        items = [("상품원가", cost_r, prev["cost"] / pb),
+                 ("셀러수수료", fee_r, prev["fee"] / pb),
+                 ("카드수수료", card_r, prev["card"] / pb),
+                 ("샘플비용", smp_r, prev["sample"] / pb)]
         prev_rows = pd.DataFrame(
-            [{"항목": "상품매출", "이번 달": WON.format(sales), "지난달": WON.format(prev["sales"]),
-              "차이": WON.format(sales - prev["sales"]), "이익률 영향": ""},
-             {"항목": "이익률", "이번 달": _pct(rate), "지난달": _pct(p_rate),
-              "차이": _pp(rate - p_rate), "이익률 영향": ""}]
-            + [{"항목": n, "이번 달": _pct(a), "지난달": _pct(b), "차이": _pp(a - b),
-                "이익률 영향": _pp(b - a)} for n, a, b in items if a or b])
-        moves = sorted(((n, b - a) for n, a, b in items), key=lambda x: abs(x[1]), reverse=True)
-        if not neg and abs(rate - p_rate) >= 0.001 and moves and abs(moves[0][1]) >= 0.001:
-            why.insert(1, "지난달 {} → 이번 달 {} (**{}**). 가장 큰 원인은 **{}** 변화 ({} 영향)."
-                       .format(_pct(p_rate), _pct(rate), _pp(rate - p_rate),
-                               moves[0][0], _pp(moves[0][1])))
+            [{"항목": "상품매출", "이번 달": WON.format(sales), "지난달": WON.format(prev["sales"])},
+             {"항목": "이익률", "이번 달": _pct(rate), "지난달": _pct(p_rate)}]
+            + [{"항목": n + " (매출 100원당)", "이번 달": "{:.1f}원".format(a * 100),
+                "지난달": "{:.1f}원".format(b * 100)} for n, a, b in items if a or b])
+        if not neg:
+            for n, a, b in items:
+                d = a - b                 # 비용 비중이 늘면 이익률은 그만큼 줄어든다
+                if d >= 0.005:
+                    down.append("**{} 비중 증가** — 매출 100원당 {:.1f}원 → {:.1f}원으로 늘어 "
+                                "이익률이 {} 낮아졌습니다".format(n, b * 100, a * 100, _pp(d)))
+                elif d <= -0.005:
+                    up.append("**{} 비중 감소** — 매출 100원당 {:.1f}원 → {:.1f}원으로 줄어 "
+                              "이익률이 {} 높아졌습니다".format(n, b * 100, a * 100, _pp(d)))
 
+    # ── 상품군
+    if not gdf.empty and not neg:
+        top_grp = gdf.iloc[0]["상품군"]          # gdf 는 판매액 큰 순
+        for _i, r in gdf[(gdf["영향"] < -0.005) & (gdf["판매액"] > 0)].sort_values("영향").head(3).iterrows():
+            lead = ("가장 많이 팔린 상품군(매출의 {})인데".format(_pct(r["매출비중"]))
+                    if r["상품군"] == top_grp else "매출의 {}를 차지하는데".format(_pct(r["매출비중"])))
+            down.append("**{}** — {} 이익률이 {}로 채널 평균({})보다 낮아 전체 이익률을 {} 낮췄습니다{}"
+                        .format(r["상품군"], lead, _pct(r["이익률"]), _pct(rate), _pp(r["영향"]),
+                                " · 직접 넣은 원가" if r["직접입력원가"] else ""))
+        for _i, r in gdf[(gdf["영향"] > 0.005) & (gdf["판매액"] > 0)].sort_values(
+                "영향", ascending=False).head(3).iterrows():
+            up.append("**{}** — 매출의 {}, 이익률이 {}로 채널 평균({})보다 높아 전체 이익률을 {} 높였습니다"
+                      .format(r["상품군"], _pct(r["매출비중"]), _pct(r["이익률"]), _pct(rate),
+                              _pp(r["영향"])))
+    elif not gdf.empty:
+        for _i, r in gdf[gdf["이익"] < 0].sort_values("이익").head(3).iterrows():
+            down.append("**{}** — {}이익 **{}**"
+                        .format(r["상품군"],
+                                "반품 {} · ".format(_man(-r["반품액"])) if r["반품액"] else "",
+                                _man(r["이익"])))
+        for _i, r in gdf[gdf["이익"] > 0].sort_values("이익", ascending=False).head(3).iterrows():
+            up.append("**{}** — {} 팔아 {} 남김 (이익률 {})"
+                      .format(r["상품군"], _man(r["판매액"]), _man(r["이익"]), _pct(r["이익률"])))
+
+    # ── 확인해 볼 것
     if not gdf.empty:
-        gdf = gdf.sort_values("판매액", ascending=False)
-    return {"rate": rate, "why": why, "groups": gdf, "prev": prev_rows}
+        for _i, r in gdf[(gdf["판매액"] > 0) & (gdf["이익"].abs() < 1)].iterrows():
+            check.append("**{}** ({}) — 이익이 0원입니다. 원가가 판매가와 똑같이 들어가 있는데 맞는지 "
+                         "확인해 보세요.".format(r["상품군"], _man(r["판매액"])))
+    n_def = sum(1 for g in goods if g.get("fee_missing"))
+    if n_def:
+        check.append("셀러수수료를 기준 파일에서 못 찾아 **기본율**로 계산한 상품이 {}건 있습니다 "
+                     "(결과 아래 '셀러수수료 기본율' 탭).".format(n_def))
+    if res["missing"]:
+        check.append("원가를 못 찾은 상품 {}건은 원가 0원으로 계산돼 **이익이 실제보다 크게** "
+                     "나왔습니다 ('미매칭' 탭).".format(len(res["missing"])))
+
+    # ── 한 줄 결론 · 요약
+    if neg:
+        tone = "#EF4444"
+        headline = "반품이 판매보다 많아 이번 달은 {} 손실".format(_man(-profit))
+        summary = ("반품({})이 판매({})보다 많아 매출이 마이너스({})가 됐습니다. "
+                   "이런 달은 이익률(%)보다 **금액**으로 보는 게 정확합니다."
+                   .format(_man(-b_amt), _man(sold), _man(sales)))
+        if ex_rate is not None:
+            summary += " 반품을 빼고 보면 이익률은 **{}**입니다.".format(_pct(ex_rate))
+    else:
+        tone = ("#10B981" if rate >= 0.25 else "#6366F1" if rate >= 0.15
+                else "#F59E0B" if rate >= 0 else "#EF4444")
+        headline = "이익률 {}".format(_pct(rate))
+        if p_rate is not None:
+            d = rate - p_rate
+            headline += (" · 지난달({})보다 {} {}".format(_pct(p_rate), _pp(d),
+                                                       "올랐습니다" if d > 0 else "내렸습니다")
+                         if abs(d) >= 0.001 else " · 지난달과 비슷합니다")
+        costs = [("원가", cost_r), ("셀러수수료", fee_r), ("카드수수료", card_r), ("샘플비용", smp_r)]
+        costs = [(n, v) for n, v in costs if v]
+        summary = ("100원어치 팔면 " + ", ".join(
+                       "{} {}원".format(n, "{:.0f}".format(v * 100) if v >= 0.01 else "{:.1f}".format(v * 100))
+                       for n, v in costs)
+                   + "이 나가고 **{:.0f}원이 남습니다.**".format(rate * 100))
+        top = max(costs, key=lambda x: x[1]) if costs else None
+        if top and top[0] == "원가":
+            summary += " 이익률은 주로 **어떤 상품이 얼마나 팔렸는지(원가율)** 에 따라 달라집니다."
+        elif top:
+            summary += " 가장 큰 비용은 **{}** 입니다.".format(top[0])
+
+    bar = [] if neg else [(n, v) for n, v in (("상품원가", cost_r), ("셀러수수료", fee_r),
+                                              ("카드수수료", card_r), ("샘플비용", smp_r),
+                                              ("이익", rate)) if v > 0]
+    return {"headline": headline, "tone": tone, "summary": summary, "bar": bar,
+            "up_title": "👍 이익을 낸 상품군" if neg else "👍 이익률을 올린 것",
+            "down_title": "👎 손실을 낸 상품군" if neg else "👎 이익률을 내린 것",
+            "up": up, "down": down, "check": check, "groups": gdf, "prev": prev_rows}
 
 
 # 결과는 '결과' 화면에서만 그린다.
@@ -1754,20 +1784,59 @@ if VIEW == "result" and out:
             unsafe_allow_html=True)
     st.caption("이익률 = 이익액 ÷ 상품매출 · 배송은 매출=원가로 처리해 이익에서 제외")
 
-    # ---- 채널별 이익률 분석 — 왜 이 이익률이 나왔는지
+    # ---- 채널별 이익률 분석 — 왜 이 이익률이 나왔는지 쉬운 말로
     st.write("")
-    st.markdown("##### 채널별 이익률 분석")
+    st.markdown("##### 채널별 이익률 분석 — 왜 이 이익률이 나왔을까?")
     _py, _pmo = int(out["period"][:4]), int(out["period"][5:7])
     _pm = "{:04d}-{:02d}".format(_py - 1, 12) if _pmo == 1 else "{:04d}-{:02d}".format(_py, _pmo - 1)
     _prev = {h["channel"]: h for h in load_history() if h.get("period") == _pm}
+    BAR_COLORS = {"상품원가": "#94A3B8", "셀러수수료": "#F59E0B", "카드수수료": "#6366F1",
+                  "샘플비용": "#EC4899", "이익": "#10B981"}
     for _tab, res in zip(st.tabs([r["ch"]["name"] for r in results]), results):
         with _tab:
             an = analyze_channel(res, _prev.get(res["ch"]["name"]))
-            st.markdown("\n".join("- " + w for w in an["why"]))
-            a1, a2 = st.columns([3, 2])
-            with a1:
-                st.caption("상품군별 이익 기여 (매출 큰 순) · 영향 = 이 상품군이 채널 이익률을 "
-                           "얼마나 올렸는지(+) 내렸는지(−)")
+            st.markdown(
+                "<div style='border-left:4px solid {t};background:#F8FAFC;border-radius:8px;"
+                "padding:.75rem 1rem;margin-bottom:.6rem'>"
+                "<div style='font-size:1.05rem;font-weight:700;color:{t}'>{h}</div></div>"
+                .format(t=an["tone"], h=an["headline"]), unsafe_allow_html=True)
+            st.markdown(an["summary"])
+            if an["bar"]:
+                _tot = sum(v for _n, v in an["bar"]) or 1.0
+                st.markdown(
+                    "<div style='font-size:.78rem;color:#64748B;margin:.2rem 0 .3rem'>"
+                    "매출 100원은 이렇게 나뉩니다</div>"
+                    "<div style='display:flex;height:26px;border-radius:6px;overflow:hidden'>"
+                    + "".join("<div title='{n} {v:.1f}원' style='width:{w:.2f}%;background:{c};"
+                              "color:#fff;font-size:.72rem;display:flex;align-items:center;"
+                              "justify-content:center;white-space:nowrap;overflow:hidden'>{lab}</div>"
+                              .format(n=n, v=v * 100, w=v / _tot * 100, c=BAR_COLORS[n],
+                                      lab="{} {:.0f}원".format(n, v * 100) if v / _tot >= 0.09 else "")
+                              for n, v in an["bar"])
+                    + "</div><div style='display:flex;flex-wrap:wrap;gap:.8rem;font-size:.74rem;"
+                      "color:#64748B;margin-top:.3rem'>"
+                    + "".join("<span><span style='display:inline-block;width:9px;height:9px;"
+                              "border-radius:2px;background:{c};margin-right:4px'></span>"
+                              "{n} {v:.1f}원</span>".format(c=BAR_COLORS[n], n=n, v=v * 100)
+                              for n, v in an["bar"])
+                    + "</div>", unsafe_allow_html=True)
+            st.write("")
+            u1, u2 = st.columns(2)
+            with u1:
+                st.markdown("**{}**".format(an["up_title"]))
+                st.markdown("\n".join("- " + x for x in an["up"]) if an["up"]
+                            else "<span style='color:#94A3B8'>특별히 없습니다.</span>",
+                            unsafe_allow_html=True)
+            with u2:
+                st.markdown("**{}**".format(an["down_title"]))
+                st.markdown("\n".join("- " + x for x in an["down"]) if an["down"]
+                            else "<span style='color:#94A3B8'>특별히 없습니다.</span>",
+                            unsafe_allow_html=True)
+            if an["check"]:
+                st.warning("**⚠️ 확인해 볼 것**\n\n" + "\n".join("- " + x for x in an["check"]))
+            with st.expander("자세히 보기 — 상품군별 이익 · 지난달 비교"):
+                st.caption("상품군별 (매출 큰 순) · 영향 = 이 상품군 때문에 채널 이익률이 "
+                           "올라간(+) / 내려간(−) 정도")
                 if not an["groups"].empty:
                     st.dataframe(
                         an["groups"][["상품군", "판매액", "반품액", "이익", "이익률", "매출비중", "영향"]],
@@ -1780,8 +1849,7 @@ if VIEW == "result" and out:
                             "매출비중": st.column_config.NumberColumn(format="percent"),
                             "영향": st.column_config.NumberColumn(format="percent"),
                         })
-            with a2:
-                st.caption("지난달({}) 대비 · 비용률이 오르면 이익률 영향은 −".format(_pm))
+                st.caption("지난달({}) 비교".format(_pm))
                 if an["prev"] is not None:
                     st.dataframe(an["prev"], width="stretch", hide_index=True)
                 else:

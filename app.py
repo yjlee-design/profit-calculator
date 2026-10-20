@@ -904,7 +904,9 @@ def run_calc(snap=None):
         if k and v is not None:
             # 0원도 그대로 적용한다 (원가가 정말 0인 품목이 있다).
             # 우선적용 False → 기준 파일에 값이 생기면 그쪽이 이긴다.
-            ov.setdefault(k, (float(v), False))
+            # 이미 기억해 둔 값을 화면에서 고친 경우도 새 값으로 바꾼다 (우선적용 O 는 그대로).
+            if k not in ov or not ov[k][1]:
+                ov[k] = (float(v), False)
 
     results, errs = [], []
     for ch in snap["channels"]:
@@ -1777,23 +1779,48 @@ if VIEW == "result" and out:
         used = out.get("manual_used", {})
         if used:
             st.success("직접 입력한 원가 {}건이 이번 계산에 반영되었습니다.".format(len(used)))
+        # 기준 파일에 없어서 직접 넣은(화면·엑셀) 원가로 계산된 품목 — 업로드 뒤에도 보이고 고칠 수 있게
+        _ent, _ent_ch = {}, {}
+        for _res in results:
+            for _g in _res["goods"]:
+                if _g["cost_src"] == "보정" and _g.get("cost_master") is None:
+                    _a = _ent.setdefault(_g["code"], {"raw": "", "name": "", "qty": 0.0,
+                                                      "amt": 0.0, "cost": _g["cost"]})
+                    _a["qty"] += _g["qty"]
+                    _a["amt"] += _g["amount"]
+                    _a["raw"] = _g["code_raw"] or _a["raw"]
+                    _a["name"] = _g["name"] or _a["name"]
+                    _ent_ch.setdefault(_g["code"], set()).add(_res["ch"]["name"])
         if miss:
             st.error("원가를 못 찾은 {}건 — 원가가 `0` 으로 잡혀 **이익이 과대계상**됩니다. "
                      "아래 `원가(직접입력)` 칸에 넣고 [입력한 원가로 다시 계산] 을 누르세요."
                      .format(len(miss)))
+        else:
+            st.success("모든 상품의 원가를 찾았습니다."
+                       + (" 아래는 기준 파일에 없어서 **직접 넣은 원가**로 계산된 {}건입니다."
+                          .format(len(_ent)) if _ent else ""))
+        if miss or _ent:
             st.caption("**0원도 넣을 수 있습니다.** 칸을 비워 두면 '아직 안 넣음' 이고, "
-                       "`0` 을 적으면 원가가 정말 0원이라는 뜻입니다.")
-            _mdf = pd.DataFrame([{"채널": c, "상품코드": raw, "품목명[규격]": nm,
-                                  "수량": q, "판매액": a,
-                                  "원가(직접입력)": (None if manual.get(_k) is None
-                                                else float(manual[_k]))}
-                                 for _k, raw, nm, q, a, c in miss])
+                       "`0` 을 적으면 원가가 정말 0원이라는 뜻입니다. "
+                       "`입력함` 줄은 지금 쓰고 있는 원가이며, 고쳐서 다시 기억할 수 있습니다.")
+            _rows_ = [{"상태": "미매칭", "채널": c, "상품코드": raw, "품목명[규격]": nm,
+                       "수량": q, "판매액": a,
+                       "원가(직접입력)": (None if manual.get(_k) is None
+                                     else float(manual[_k]))}
+                      for _k, raw, nm, q, a, c in miss]
+            _rows_ += [{"상태": "입력함", "채널": ", ".join(sorted(_ent_ch[_k])),
+                        "상품코드": _a["raw"], "품목명[규격]": _a["name"],
+                        "수량": _a["qty"], "판매액": _a["amt"], "원가(직접입력)": float(_a["cost"])}
+                       for _k, _a in sorted(_ent.items(), key=lambda x: -x[1]["amt"])]
+            _mdf = pd.DataFrame(_rows_)
             # 전부 비어 있어도 숫자 열로 잡히도록 (빈칸=안 넣음, 0=원가 0원)
             _mdf["원가(직접입력)"] = pd.to_numeric(_mdf["원가(직접입력)"], errors="coerce")
+            _now_cost = {E.code_key(r["상품코드"]): r["원가(직접입력)"]
+                         for _i, r in _mdf.iterrows() if r["상태"] == "입력함"}
             miss_df = st.data_editor(
                 _mdf,
                 width="stretch", hide_index=True, key="miss_editor",
-                disabled=["채널", "상품코드", "품목명[규격]", "수량", "판매액"],
+                disabled=["상태", "채널", "상품코드", "품목명[규격]", "수량", "판매액"],
                 column_config={
                     "판매액": st.column_config.NumberColumn(format="%d"),
                     "수량": st.column_config.NumberColumn(format="%d"),
@@ -1807,7 +1834,10 @@ if VIEW == "result" and out:
                 raw_v = r["원가(직접입력)"]
                 if raw_v is None or pd.isna(raw_v):
                     continue                       # 안 넣은 칸은 건너뛴다
-                typed[E.code_key(r["상품코드"])] = float(E.num(raw_v))
+                _k = E.code_key(r["상품코드"])
+                if _k in _now_cost and float(raw_v) == float(_now_cost[_k]):
+                    continue                       # 이미 쓰고 있는 값 그대로면 건너뛴다
+                typed[_k] = float(E.num(raw_v))
 
             def _remember(vals, names, note):
                 """원가를 기억(Supabase / 원가보정.xlsx)하고 다시 계산"""
@@ -1849,17 +1879,17 @@ if VIEW == "result" and out:
 
             # ── 엑셀로 한꺼번에: 내려받아 원가를 채운 뒤 다시 올리기 ──
             st.write("")
-            st.markdown("**엑셀로 한꺼번에 넣기** — 미매칭 목록을 내려받아 "
-                        "`원가(직접입력)` 칸을 채운 뒤 그대로 올리세요.")
+            st.markdown("**엑셀로 한꺼번에 넣기·고치기** — 목록을 내려받아 "
+                        "`원가(직접입력)` 칸을 채우거나 고친 뒤 그대로 올리세요.")
             x1, x2 = st.columns([1, 2])
             _xbuf = io.BytesIO()
             with pd.ExcelWriter(_xbuf, engine="openpyxl") as _xw:
                 _mdf.to_excel(_xw, index=False, sheet_name="미매칭")
                 _ws = _xw.sheets["미매칭"]
-                for _col, _w in zip("ABCDEF", [16, 22, 48, 8, 14, 16]):
+                for _col, _w in zip("ABCDEFG", [9, 16, 22, 48, 8, 14, 16]):
                     _ws.column_dimensions[_col].width = _w
             x1.download_button(
-                "미매칭 목록 엑셀 내려받기", data=_xbuf.getvalue(),
+                "미매칭·입력한 원가 엑셀 내려받기", data=_xbuf.getvalue(),
                 file_name="{} 미매칭 원가입력.xlsx".format(out["period"]),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch")
@@ -1897,8 +1927,11 @@ if VIEW == "result" and out:
                         else:
                             _miss_keys = {_k for _k, *_ in miss}
                             _hit = sum(1 for _k in up_vals if _k in _miss_keys)
-                            st.info("엑셀에서 원가 {}건을 읽었습니다 (지금 미매칭 {}건 중 {}건 해당)."
-                                    .format(len(up_vals), len(miss), _hit))
+                            _chg = sum(1 for _k, v in up_vals.items()
+                                       if _k in _now_cost and float(v) != float(_now_cost[_k]))
+                            st.info("엑셀에서 원가 {}건을 읽었습니다 — 미매칭 {}건 중 {}건 새로 입력, "
+                                    "이미 입력한 원가 {}건 변경."
+                                    .format(len(up_vals), len(miss), _hit, _chg))
                             st.dataframe(pd.DataFrame(
                                 [{"상품코드": up_names[_k][0], "품목명[규격]": up_names[_k][1],
                                   "원가": v} for _k, v in up_vals.items()]),
@@ -1910,8 +1943,6 @@ if VIEW == "result" and out:
                                 _remember(up_vals, up_names, "엑셀 업로드로 입력")
                 except Exception as _ex:
                     st.error("엑셀을 읽지 못했습니다: {}".format(_ex))
-        else:
-            st.success("모든 상품의 원가를 찾았습니다.")
         if manual:
             with st.expander("직접 입력한 원가 {}건 — 되돌리기".format(len(manual))):
                 st.dataframe(pd.DataFrame([{"상품코드": k, "원가": v}

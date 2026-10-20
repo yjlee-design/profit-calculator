@@ -1538,6 +1538,12 @@ if VIEW == "input":
                                           key="dli_%s" % _p, width="stretch")
 
 # ---------------------------------------------------------------- 결과
+def profit_rate(profit, sales):
+    """이익률. 반품이 판매보다 많아 매출이 마이너스여도 이익이 마이너스면 %도 마이너스로
+       (마이너스 ÷ 마이너스 = 플러스로 뒤집히지 않게 매출은 크기만 쓴다)"""
+    return profit / abs(sales) if sales else 0.0
+
+
 # 결과는 '결과' 화면에서만 그린다.
 # (전에는 out 만 보고 그려서 '데이터 입력' 화면 아래에도 같은 결과가 딸려 나왔다)
 out = st.session_state.get("out")
@@ -1553,8 +1559,7 @@ if VIEW == "result" and out:
     m[2].metric("배송매출", WON.format(total["delivery"]) + " 원",
                 delta="이익 계산 제외", delta_color="off")
     m[3].metric("총이익액", WON.format(total["profit"]) + " 원")
-    m[4].metric("이익률", "{:.2f} %".format(total["margin"] * 100)
-                if total["sales"] > 0 else "반품 초과")
+    m[4].metric("이익률", "{:.2f} %".format(profit_rate(total["profit"], total["gross"]) * 100))
     miss = E.missing_rows(results)
     m[5].metric("원가 미매칭", "{}건".format(len(miss)),
                 delta="판매액 " + WON.format(sum(x[4] for x in miss)) + "원",
@@ -1565,12 +1570,10 @@ if VIEW == "result" and out:
     st.markdown("##### 채널별")
     ch_cols = st.columns(len(results) or 1)
     for col, res in zip(ch_cols, results):
-        rate_ = res["profit"] / res["sales"] if res["sales"] else 0.0
-        tone = "#10B981" if rate_ >= 0.25 else ("#6366F1" if rate_ >= 0.15 else "#F59E0B")
-        # 반품이 판매보다 많아 매출이 0 이하이면 이익률(%)은 뜻이 없다 → '반품 초과'
+        rate_ = profit_rate(res["profit"], res["sales"])
+        tone = ("#10B981" if rate_ >= 0.25 else "#6366F1" if rate_ >= 0.15
+                else "#F59E0B" if rate_ >= 0 else "#EF4444")
         rate_txt = "{:.2f}%".format(rate_ * 100)
-        if res["sales"] <= 0:
-            rate_txt, tone = "반품 초과", "#EF4444"
         sold = sum(g["amount"] for g in res["goods"] if g["amount"] > 0)
         back = sum(g["amount"] for g in res["goods"] if g["amount"] < 0)
         split_html = ""
@@ -1647,13 +1650,13 @@ if VIEW == "result" and out:
         "구분": r["ch"]["name"], "상품매출": r["sales"], "상품원가": r["cost"],
         "셀러수수료": r["fee"], "카드수수료": r["card"], "샘플비용": r["sample"],
         "이익액": r["profit"],
-        "이익률": r["profit"] / r["sales"] if r["sales"] > 0 else None,
+        "이익률": profit_rate(r["profit"], r["sales"]),
         "배송매출": r["delivery_sales"],
     } for r in results] + [{
         "구분": "합계", "상품매출": total["sales"], "상품원가": total["cost"],
         "셀러수수료": total["fee"], "카드수수료": total["card"], "샘플비용": total["sample"],
         "이익액": total["profit"],
-        "이익률": total["profit"] / total["sales"] if total["sales"] > 0 else None,
+        "이익률": profit_rate(total["profit"], total["sales"]),
         "배송매출": total["delivery"],
     }])
     money_cols = ["상품매출", "상품원가", "셀러수수료", "카드수수료", "샘플비용", "이익액", "배송매출"]
@@ -1661,9 +1664,7 @@ if VIEW == "result" and out:
         summary, width="stretch", hide_index=True,
         column_config={**{c: st.column_config.NumberColumn(format="%d") for c in money_cols},
                        "이익률": st.column_config.NumberColumn(format="percent")})
-    st.caption("* 배송 이익 제외 — 배송매출은 원가와 같게 처리하여 이익 0"
-               + (" · 이익률이 빈칸이면 반품이 판매보다 많아 상품매출이 0 이하인 경우입니다"
-                  if any(r["sales"] <= 0 for r in results) or total["sales"] <= 0 else ""))
+    st.caption("* 배송 이익 제외 — 배송매출은 원가와 같게 처리하여 이익 0")
 
     # ---- 월별 추이
     hist = load_history()
@@ -1671,7 +1672,7 @@ if VIEW == "result" and out:
         import altair as alt
         hdf = pd.DataFrame(hist)
         hdf["이익률"] = hdf.apply(
-            lambda r: (r["profit"] / r["sales"]) if r["sales"] > 0 else None, axis=1)
+            lambda r: profit_rate(r["profit"], r["sales"]), axis=1)
         months = sorted(hdf["period"].unique())
 
         if len(months) >= 2:

@@ -868,7 +868,7 @@ def render_source_panel():
     with st.expander("📁 기준 파일 — 원가·셀러수수료를 어디서 읽는지", expanded=False):
         c1, c2 = st.columns([3, 2])
         with c1:
-            up_ = st.file_uploader("기준 파일 직접 올리기 (선택 · 최우선 적용 · 🔄 업데이트 를 누르면 저장)",
+            up_ = st.file_uploader("기준 파일 직접 올리기 (선택 · 최우선 적용 · 올리면 바로 저장)",
                                    type=["xlsx", "xlsm"], accept_multiple_files=True,
                                    key="up_src")
             for nm, p, s in stats:
@@ -887,8 +887,15 @@ def render_source_panel():
                          help="파일이 바뀌었는지만 확인"):
                 db_fresh()
                 st.rerun()
+            # 새로 올린 기준 파일은 버튼을 누르지 않아도 바로 DB 에 저장한다
+            _usig = tuple((f.name, f.size) for f in (up_ or []))
+            new_up = bool(_usig) and st.session_state.get("src_up_saved") != _usig
+            if new_up:
+                st.session_state["src_up_saved"] = _usig
+                do_up = True
             cur = st.session_state.get("lookups")
-            if cur is not None and cur["sig"] != source_sig(up_) and not do_up:
+            if (cur is not None and cur["sig"] != source_sig(up_) and not do_up
+                    and not (USE_DB and _usig)):
                 st.warning("기준 파일이 바뀌었습니다. **🔄 업데이트** 를 눌러 반영하세요.")
             if do_up:
                 db_fresh()
@@ -954,6 +961,22 @@ auth.logout_button()
 def _read_capture_cached(png_bytes):
     from PIL import Image
     return CC.read_capture(Image.open(io.BytesIO(png_bytes)))
+
+
+def save_card_amounts(period, def_cards):
+    """자동으로 채운 카드 정상금액을 바로 DB 에 저장 (저장 버튼을 안 눌러도 남도록)"""
+    if not USE_DB:
+        return
+    rows = []
+    for i, (m, a, r) in enumerate(def_cards):
+        amt = st.session_state.get("card_amt_%s_%d" % (period, i), a)
+        pct = st.session_state.get("card_rt_%s_%d" % (period, i))
+        rows.append((m, float(amt or 0.0), float(pct) / 100.0 if pct is not None else float(r)))
+    try:
+        db.save_cards(period, rows)
+        db_fresh()
+    except Exception as e:
+        st.session_state["_card_save_err"] = str(e)
 
 
 def card_capture_box(period, def_cards):
@@ -1036,6 +1059,7 @@ def card_capture_box(period, def_cards):
             for i, m in enumerate(methods):
                 # 캡쳐에 없는 결제수단은 0 으로 (지난달 값이 남지 않도록)
                 st.session_state["card_amt_%s_%d" % (period, i)] = float(amt.get(m, 0.0))
+            save_card_amounts(period, def_cards)
             st.session_state["cap_open_" + period] = False
             st.session_state["cap_applied_" + period] = _sig
             st.session_state["_cap_flash"] = "캡쳐의 결제합계로 {}개 결제수단을 채웠습니다.".format(len(amt))
@@ -1263,6 +1287,17 @@ if VIEW == "input":
             type=["xlsx", "xlsm"], key="up_srook_%s" % period,
             help="결제수단별 [정상금액]을 읽어 아래 칸을 자동으로 채웁니다. "
                  "수수료는 아래 요율로 계산합니다.")
+        srk_key = period + "#스룩페이"
+        if srk is None:
+            # 올려 둔 파일이 있으면 다시 보여 준다 (금액은 이미 저장돼 있어 다시 채우지 않음)
+            _kept_srk = load_month_files(srk_key).get("스룩페이")
+            if _kept_srk and _kept_srk[1] and ("srook_" + period) not in st.session_state:
+                try:
+                    st.session_state["srook_" + period] = E.read_srookpay(io.BytesIO(_kept_srk[1]))
+                except Exception:
+                    pass
+            if _kept_srk and _kept_srk[1]:
+                st.caption("✅ 보관됨 — **{}**".format(_kept_srk[0]))
         if srk is not None:
             sig = "{}:{}:{}".format(period, srk.name, srk.size)
             try:
@@ -1283,6 +1318,9 @@ if VIEW == "input":
                     for i, (m, _a, _r) in enumerate(def_cards):
                         if E.norm(m) not in in_file:
                             st.session_state["card_amt_%s_%d" % (period, i)] = 0.0
+                    # 파일과 채운 금액을 바로 DB 에 저장
+                    save_month_files(srk_key, {"스룩페이": (srk.name, srk.getvalue())})
+                    save_card_amounts(period, def_cards)
                     st.session_state["srook_unmatched"] = unmatched
                     st.session_state["srook_applied"] = sig
                     st.rerun()
@@ -1536,8 +1574,12 @@ if VIEW == "input":
                                                  hide_index=True, height=200,
                                                  column_config={"원가": st.column_config.NumberColumn(
                                                      format="%d")})
-                                    if st.button("엑셀 원가 기억하기", type="primary",
-                                                 width="stretch", key="smp_miss_up_apply_%s" % period):
+                                    # 올리면 바로 DB 에 기억 (버튼 없이)
+                                    _ssig = (period, up_smiss.name, up_smiss.size)
+                                    if st.session_state.get("smp_miss_saved") == _ssig:
+                                        st.success("이 엑셀의 샘플 원가는 저장되어 반영됐습니다.")
+                                    else:
+                                        st.session_state["smp_miss_saved"] = _ssig
                                         try:
                                             where = save_sample_manual({**smp_manual, **s_up})
                                             st.session_state["_smp_flash"] = (
@@ -2410,10 +2452,13 @@ if VIEW == "result" and out:
                                   "원가": v} for _k, v in up_vals.items()]),
                                 width="stretch", hide_index=True, height=200,
                                 column_config={"원가": st.column_config.NumberColumn(format="%d")})
-                            if st.button("엑셀 원가로 다시 계산 · 기억하기", type="primary",
-                                         width="stretch", key="miss_upload_apply",
-                                         help="다음 달부터는 입력하지 않아도 이 원가가 쓰입니다"):
+                            # 올리면 바로 DB 에 기억하고 다시 계산 (버튼 없이)
+                            _msig = (out["period"], up_miss.name, up_miss.size)
+                            if st.session_state.get("miss_upload_saved") != _msig:
+                                st.session_state["miss_upload_saved"] = _msig
                                 _remember(up_vals, up_names, "엑셀 업로드로 입력")
+                            else:
+                                st.success("이 엑셀의 원가는 저장되어 계산에 반영됐습니다.")
                 except Exception as _ex:
                     st.error("엑셀을 읽지 못했습니다: {}".format(_ex))
         if manual:

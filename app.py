@@ -646,6 +646,7 @@ def go(view):
        호출한 쪽에서 st.rerun() 을 해야 한다."""
     st.session_state["view"] = view
     st.session_state["_nav_pending"] = NAV_REV[view]
+    st.session_state["_view_saved"] = view
     remember("view", view)
 
 
@@ -718,7 +719,11 @@ if "nav_menu" not in st.session_state:
         st.session_state.get("view", _last), "데이터 입력")
 _pick = st.sidebar.radio("메뉴", list(NAV), key="nav_menu", label_visibility="collapsed")
 if st.session_state.get("view") != NAV[_pick]:
-    remember("view", NAV[_pick])
+    # 결과가 없으면 아래에서 화면을 입력으로 되돌리므로, 여기만 보면 매번 '바뀜'으로 보인다.
+    # 같은 값을 클릭마다 DB 에 또 쓰지 않도록 마지막으로 저장한 값과 비교한다.
+    if st.session_state.get("_view_saved") != NAV[_pick]:
+        st.session_state["_view_saved"] = NAV[_pick]
+        remember("view", NAV[_pick])
 st.session_state["view"] = NAV[_pick]
 if NAV[_pick] == "result" and not st.session_state.get("out"):
     st.sidebar.caption("아직 계산 결과가 없습니다. **데이터 입력** 에서 계산하세요.")

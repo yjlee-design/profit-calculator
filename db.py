@@ -21,6 +21,8 @@ DB 가 없으면 모든 함수가 조용히 비활성화되고, 앱은 기존처
 """
 
 import os
+import threading
+import time
 
 try:
     import psycopg
@@ -191,8 +193,7 @@ def enabled():
     return psycopg is not None and bool(get_url())
 
 
-def connect():
-    """열린 연결 반환. 사용 후 close() 하거나 with 로 감쌀 것."""
+def _open():
     url = get_url()
     if not url:
         raise RuntimeError("DB 접속 정보가 없습니다. .streamlit/secrets.toml 의 [db] url 을 채우세요.")
@@ -202,6 +203,68 @@ def connect():
     # prepare_threshold=None 으로 꺼야 executemany 가 동작한다.
     return psycopg.connect(url, row_factory=dict_row, connect_timeout=10,
                            prepare_threshold=None)
+
+
+# 접속은 한 번 열어 두고 계속 다시 쓴다.
+# 클라우드 서버(미국)에서 서울 DB 로 새로 접속하면 한 번에 1초 가까이 걸려서,
+# 조회할 때마다 접속하면 첫 화면에만 15초 넘게 걸렸다.
+# 여러 사람이 동시에 써도 엉키지 않게 한 번에 하나씩만 쓰도록 잠근다.
+_shared = {"cn": None, "url": None, "used": 0.0}
+_lock = threading.RLock()
+_IDLE_REOPEN = 120          # 이만큼(초) 안 쓰면 끊겼을 수 있으니 새로 연다
+
+
+class _Session:
+    """with connect() as cn: — 끝나면 커밋(오류면 되돌림)하고 연결은 닫지 않는다."""
+
+    def __enter__(self):
+        _lock.acquire()
+        try:
+            cn, url = _shared["cn"], get_url()
+            stale = (cn is None or cn.closed or cn.broken or url != _shared["url"]
+                     or time.monotonic() - _shared["used"] > _IDLE_REOPEN)
+            if stale:
+                _drop()
+                cn = _shared["cn"] = _open()
+                _shared["url"] = url
+            return cn
+        except BaseException:
+            _lock.release()
+            raise
+
+    def __exit__(self, et, ev, tb):
+        try:
+            cn = _shared["cn"]
+            if cn is not None and not cn.closed:
+                try:
+                    if et is None:
+                        cn.commit()
+                    else:
+                        cn.rollback()
+                except Exception:
+                    _drop()
+                    if et is None:
+                        raise
+            if et is not None and psycopg is not None and isinstance(ev, psycopg.OperationalError):
+                _drop()          # 연결 문제였으면 다음엔 새로 연다
+            _shared["used"] = time.monotonic()
+        finally:
+            _lock.release()
+        return False
+
+
+def _drop():
+    cn, _shared["cn"] = _shared["cn"], None
+    if cn is not None:
+        try:
+            cn.close()
+        except Exception:
+            pass
+
+
+def connect():
+    """with connect() as cn: 로 쓴다. 같은 연결을 계속 다시 쓴다."""
+    return _Session()
 
 
 def init_schema():

@@ -9,6 +9,7 @@
 """
 
 import io
+import json
 import os
 import sys
 import time
@@ -489,6 +490,35 @@ def save_month_files(period, files):
             (d / "{}__{}".format(ch, fn)).write_bytes(data)
     except OSError:
         pass
+
+
+CHECK_FILE_LOCAL = BASE / "결과" / "원가확인.json"
+
+
+def load_cost_checks(period):
+    """그 달에 원가를 확인한 결과 {"채널|코드": 원가 또는 "file"}"""
+    try:
+        if db.enabled():
+            raw = db.get_setting("cost_check:" + period)
+            return json.loads(raw) if raw else {}
+        allm = json.loads(CHECK_FILE_LOCAL.read_text(encoding="utf-8"))
+        return allm.get(period, {})
+    except Exception:
+        return {}
+
+
+def save_cost_checks(period, checks):
+    if db.enabled():
+        db.save_setting("cost_check:" + period, json.dumps(checks, ensure_ascii=False))
+        return "Supabase"
+    try:
+        allm = json.loads(CHECK_FILE_LOCAL.read_text(encoding="utf-8"))
+    except Exception:
+        allm = {}
+    allm[period] = checks
+    CHECK_FILE_LOCAL.parent.mkdir(parents=True, exist_ok=True)
+    CHECK_FILE_LOCAL.write_text(json.dumps(allm, ensure_ascii=False, indent=1), encoding="utf-8")
+    return "원가확인.json"
 
 
 def load_month_files(period):
@@ -1084,6 +1114,7 @@ def run_calc(snap=None):
             if k not in ov or not ov[k][1]:
                 ov[k] = (float(v), False)
 
+    checks = load_cost_checks(snap["period"])
     results, errs = [], []
     for ch in snap["channels"]:
         got = snap["files"].get(ch["name"])
@@ -1097,7 +1128,7 @@ def run_calc(snap=None):
             errs.append("{} ({}) — {}".format(ch["name"], fname, e))
             continue
         results.append(E.calc_channel(ch, rows, snap["cost"], snap["fee"],
-                                      ov, snap["fee_override"], snap["origin"]))
+                                      ov, snap["fee_override"], snap["origin"], checks))
     if not results:
         st.session_state.pop("out", None)
         return False, errs
@@ -2005,9 +2036,11 @@ if VIEW == "result" and out:
     m[3].metric("총이익액", WON.format(total["profit"]) + " 원")
     m[4].metric("이익률", "{:.2f} %".format(profit_rate(total["profit"], total["gross"]) * 100))
     miss = E.missing_rows(results)
-    m[5].metric("원가 미매칭", "{}건".format(len(miss)),
-                delta="판매액 " + WON.format(sum(x[4] for x in miss)) + "원",
-                delta_color="inverse" if miss else "off")
+    sus = E.suspect_rows(results)
+    m[5].metric("원가 미매칭", "{}건".format(len(miss) + len(sus)),
+                delta=("원가 확인 {}건 포함".format(len(sus)) if sus else
+                       "판매액 " + WON.format(sum(x[4] for x in miss)) + "원"),
+                delta_color="inverse" if (miss or sus) else "off")
 
     # ---- 채널별 한눈에 보기
     st.write("")
@@ -2255,7 +2288,7 @@ if VIEW == "result" and out:
             st.caption("월별 추이 그래프는 **2개월 이상** 계산하면 나타납니다. "
                        "(현재 {}개월 기록)".format(len(months)))
 
-    tabs = st.tabs(["배송비", "미매칭", "셀러수수료 기본율", "보정적용내역", "중복코드 점검"]
+    tabs = st.tabs(["배송비", "미매칭 · 원가확인", "셀러수수료 기본율", "보정적용내역", "중복코드 점검"]
                    + [r["ch"]["name"] for r in results])
 
     with tabs[0]:
@@ -2292,6 +2325,92 @@ if VIEW == "result" and out:
         used = out.get("manual_used", {})
         if used:
             st.success("직접 입력한 원가 {}건이 이번 계산에 반영되었습니다.".format(len(used)))
+
+        # ---- 원가 확인 필요: 원가파일 원가가 판매가에 너무 가까운(또는 넘는) 코드
+        #      행사·특가처럼 원가가 따로 있는 경우를 잡아 낸다. 선택은 이번 달·그 채널에만 적용.
+        _checks = load_cost_checks(out["period"])
+
+        def _save_checks(new):
+            try:
+                where = save_cost_checks(out["period"], new)
+                st.session_state["_chk_flash"] = "원가 확인 결과를 {} 에 저장하고 다시 계산했습니다.".format(where)
+                ok, _e = run_calc()
+                if ok:
+                    st.rerun()
+            except Exception as ex:
+                st.error("저장 실패: {}".format(ex))
+
+        if st.session_state.get("_chk_flash"):
+            st.success(st.session_state.pop("_chk_flash"))
+        if sus:
+            st.warning("**원가 확인이 필요한 {}건** — 원가파일 원가가 판매가의 {:.0f}% 이상이라 "
+                       "이익이 거의 없거나 손해입니다. 행사·특가처럼 원가가 따로 있으면 "
+                       "`원가(직접입력)` 에 넣고, 원가파일 값이 맞으면 `원가파일 사용` 을 체크하세요. "
+                       "**이번 달 · 그 채널에만** 적용됩니다. (확인 전에는 원가파일 값으로 계산해 둡니다)"
+                       .format(len(sus), (1 - E.SUSPECT_MIN) * 100))
+            _sdf = pd.DataFrame([{
+                "채널": x["ch"], "상품코드": x["raw"], "품목명[규격]": x["name"],
+                "수량": x["qty"], "평균 판매가": x["amt"] / x["qty"],
+                "원가파일 원가": x["cost"], "원가 이익률": x["rate"],
+                "원가(직접입력)": None, "원가파일 사용": False,
+                "_key": E.check_key(x["ch"], x["code"])} for x in sus])
+            _sdf["원가(직접입력)"] = pd.to_numeric(_sdf["원가(직접입력)"], errors="coerce")
+            _sed = st.data_editor(
+                _sdf, hide_index=True, width="stretch",
+                key="sus_editor_{}_{}".format(out["period"], len(_checks)),
+                column_order=["채널", "상품코드", "품목명[규격]", "수량", "평균 판매가",
+                              "원가파일 원가", "원가 이익률", "원가(직접입력)", "원가파일 사용"],
+                disabled=["채널", "상품코드", "품목명[규격]", "수량", "평균 판매가",
+                          "원가파일 원가", "원가 이익률"],
+                column_config={
+                    "수량": st.column_config.NumberColumn(format="%d"),
+                    "평균 판매가": st.column_config.NumberColumn(format="%d"),
+                    "원가파일 원가": st.column_config.NumberColumn(format="%d"),
+                    "원가 이익률": st.column_config.NumberColumn(
+                        format="percent", help="원가만 뺀 이익률 (수수료 빼기 전)"),
+                    "원가(직접입력)": st.column_config.NumberColumn(
+                        format="%d", min_value=0.0, step=100.0, default=None,
+                        help="이번 달 이 채널에서 쓸 1개당 원가"),
+                    "원가파일 사용": st.column_config.CheckboxColumn(
+                        help="원가파일 원가가 맞으면 체크 — 다음 계산부터 이 목록에서 빠집니다"),
+                })
+            _picks = {}
+            for _i, r in _sed.iterrows():
+                _v = r["원가(직접입력)"]
+                if _v is not None and not pd.isna(_v):
+                    _picks[r["_key"]] = float(_v)
+                elif r["원가파일 사용"]:
+                    _picks[r["_key"]] = E.CHECK_FILE
+            _c1, _c2 = st.columns([2, 1])
+            if _c1.button("입력·체크한 대로 저장 · 다시 계산", type="primary", width="stretch",
+                          disabled=not _picks, key="sus_save"):
+                _save_checks({**_checks, **_picks})
+            if _c2.button("전부 원가파일 원가 사용", width="stretch", key="sus_all_file",
+                          help="이상이 없으면 누르세요. 원가파일 원가 그대로 계산합니다."):
+                _save_checks({**_checks, **{E.check_key(x["ch"], x["code"]): E.CHECK_FILE
+                                            for x in sus}})
+        if _checks:
+            _info = {}
+            for _res in results:
+                for _g in _res["goods"]:
+                    _info.setdefault(E.check_key(_res["ch"]["name"], _g["code"]),
+                                     (_g["code_raw"], _g["name"]))
+            with st.expander("이번 달 원가 확인한 코드 {}건 — 되돌리기".format(len(_checks))):
+                _kdf = pd.DataFrame([{
+                    "채널": k.split("|", 1)[0],
+                    "상품코드": _info.get(k, (k.split("|", 1)[-1], ""))[0],
+                    "품목명[규격]": _info.get(k, ("", ""))[1],
+                    "결과": ("원가파일 원가 그대로" if v == E.CHECK_FILE
+                             else "수기 원가 {}원".format(WON.format(v))),
+                    "되돌리기": False, "_key": k} for k, v in _checks.items()])
+                _ked = st.data_editor(
+                    _kdf, hide_index=True, width="stretch",
+                    key="chk_done_{}_{}".format(out["period"], len(_checks)),
+                    column_order=["채널", "상품코드", "품목명[규격]", "결과", "되돌리기"],
+                    disabled=["채널", "상품코드", "품목명[규격]", "결과"])
+                _undo = {r["_key"] for _i, r in _ked.iterrows() if r["되돌리기"]}
+                if st.button("체크한 줄 되돌리기 · 다시 계산", disabled=not _undo, key="chk_undo"):
+                    _save_checks({k: v for k, v in _checks.items() if k not in _undo})
         # 기준 파일에 없어서 직접 넣은(화면·엑셀) 원가로 계산된 품목 — 업로드 뒤에도 보이고 고칠 수 있게
         _ent, _ent_ch = {}, {}
         for _res in results:

@@ -1005,7 +1005,19 @@ def _read_sales_csv(src, filename=""):
 
 
 # ---------------------------------------------------------------- 계산
-def calc_channel(ch, rows, cost, fee, override, fee_override, origin=None):
+# 원가가 판매가에 너무 가까우면(원가 이익률이 이 값보다 낮으면) 원가가 맞는지 확인을 받는다.
+SUSPECT_MIN = 0.05
+CHECK_FILE = "file"          # '원가파일 그대로 사용' 으로 확인함
+CHECK_SRC = "수기(이번 달)"
+
+
+def check_key(ch_name, code):
+    return "{}|{}".format(ch_name, code)
+
+
+def calc_channel(ch, rows, cost, fee, override, fee_override, origin=None, checks=None):
+    """checks: {"채널|코드": 원가 또는 "file"} — 그 달·그 채널에서 원가 확인한 결과"""
+    checks = checks or {}
     goods, delivery, missing = [], [], []
     for r in rows:
         if is_delivery(r):
@@ -1039,16 +1051,58 @@ def calc_channel(ch, rows, cost, fee, override, fee_override, origin=None):
             c["fee_src"], c["fee_missing"] = "", False
         goods.append(c)
 
+    suspect = _check_costs(ch["name"], goods, checks)
     return {
         "ch": ch,
         "goods": goods,
         "delivery": delivery,
         "missing": missing,
+        "suspect": suspect,
         "sales": sum(r["amount"] for r in goods),
         "cost": sum(r["cost_sum"] for r in goods),
         "fee": sum(r["fee_sum"] for r in goods),
         "delivery_sales": sum(r["amount"] for r in delivery),
     }
+
+
+def _check_costs(ch_name, goods, checks):
+    """원가파일 원가가 판매가에 너무 가까운(또는 넘는) 코드를 찾는다.
+       이미 확인한 코드는 그 결과(수기 원가 / 원가파일 그대로)를 적용하고,
+       아직 확인 안 한 코드는 목록으로 돌려준다. (계산은 원가파일 값으로 해 둔다)"""
+    agg = {}
+    for g in goods:
+        if g["cost_src"] in ("보정", "미매칭"):
+            continue
+        a = agg.setdefault(g["code"], {"qty": 0.0, "amt": 0.0, "cost_sum": 0.0,
+                                       "name": "", "raw": "", "cost": g["cost"]})
+        a["qty"] += g["qty"]
+        a["amt"] += g["amount"]
+        a["cost_sum"] += g["cost_sum"]
+        a["name"] = g["name"] or a["name"]
+        a["raw"] = g["code_raw"] or a["raw"]
+    out = []
+    for code, a in agg.items():
+        done = checks.get(check_key(ch_name, code))
+        if done is not None and done != CHECK_FILE:
+            for g in goods:
+                if g["code"] == code and g["cost_src"] not in ("보정", "미매칭"):
+                    g["cost_file"] = g["cost"]
+                    g["cost"], g["cost_src"] = float(done), CHECK_SRC
+                    g["cost_sum"] = g["cost"] * g["qty"]
+            continue
+        if a["qty"] <= 0 or a["amt"] <= 0 or a["cost_sum"] <= 0:
+            continue                       # 반품만 있거나 원가 0 인 코드는 보지 않는다
+        rate = 1 - a["cost_sum"] / a["amt"]
+        if rate >= SUSPECT_MIN or done == CHECK_FILE:
+            continue
+        out.append({"code": code, "raw": a["raw"], "name": a["name"], "qty": a["qty"],
+                    "amt": a["amt"], "cost": a["cost"], "rate": rate, "ch": ch_name})
+    return sorted(out, key=lambda x: -x["amt"])
+
+
+def suspect_rows(results):
+    """모든 채널의 '원가 확인 필요' 목록"""
+    return [x for res in results for x in res.get("suspect", [])]
 
 
 def apply_totals(results, card_total, sample):
@@ -1236,7 +1290,7 @@ def _channel(wb, res):
         if g["cost_src"] == "미매칭":
             for j in range(1, len(cols) + 1):
                 ws.cell(r, j).fill = BAD
-        elif g["cost_src"] == "보정":
+        elif g["cost_src"] in ("보정", CHECK_SRC):
             sc.fill = WARN
 
     r += 1
@@ -1300,11 +1354,12 @@ def applied_rows(results):
     out = []
     for res in results:
         for g in res["goods"]:
-            if g["cost_src"] != "보정":
+            if g["cost_src"] not in ("보정", CHECK_SRC):
                 continue
-            d = None if g["cost_master"] is None else (g["cost"] - g["cost_master"]) * g["qty"]
+            mst = g.get("cost_file") if g["cost_src"] == CHECK_SRC else g["cost_master"]
+            d = None if mst is None else (g["cost"] - mst) * g["qty"]
             out.append((res["ch"]["name"], g["code_raw"], g["name"], g["qty"],
-                        g["cost_master"], g["cost"], d))
+                        mst, g["cost"], d))
     return out
 
 

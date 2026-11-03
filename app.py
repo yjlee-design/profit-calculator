@@ -1276,16 +1276,21 @@ if VIEW == "input":
             _m1.metric("자체부담 상품원가", WON.format(auto["goods"]) + " 원",
                        help="파일의 상품단가 (비어 있으면 마진율표 원가 x 수량)")
             _m2.metric("파일의 배송비 합계", WON.format(auto["ship"]) + " 원")
-            _m3.metric("원가 매칭", "{} / {} 건".format(n_ok, n_ok + n_no),
-                       help="상품명+옵션명으로 기준 파일에서 찾은 건수")
+            _m3.metric("원가 매칭", "{} / {} 줄".format(n_ok, n_ok + n_no),
+                       help="샘플 파일의 줄 중 상품명+옵션명으로 기준 파일에서 원가를 찾은 줄 수")
             smp_manual = load_sample_manual()
             if st.session_state.get("_smp_flash"):
                 st.success(st.session_state.pop("_smp_flash"))
             if n_no:
-                st.warning("**{}건**은 기준 파일에서 원가를 찾지 못했습니다. "
+                # 파일의 줄 수(n_no)와 표에 보이는 품목 수(같은 상품명+옵션명은 한 줄)가 달라
+                # 헷갈리지 않도록 품목 수를 앞에 쓴다.
+                n_no_items = len({mm_["key"] for mm_ in auto["missing"]})
+                _no_txt = ("{}개 품목".format(n_no_items) if n_no_items == n_no
+                           else "{}개 품목 (파일에서 {}줄)".format(n_no_items, n_no))
+                st.warning("**{}**은 기준 파일에서 원가를 찾지 못했습니다. "
                            "아래 `원가(직접입력)` 칸에 1개당 원가를 넣고 "
-                           "[입력한 원가 기억하기] 를 누르세요.".format(n_no))
-                with st.expander("원가를 못 찾은 {}건 — 직접 입력".format(n_no), expanded=True):
+                           "[입력한 원가 기억하기] 를 누르세요.".format(_no_txt))
+                with st.expander("원가를 못 찾은 {} — 직접 입력".format(_no_txt), expanded=True):
                     # 같은 상품명+옵션명은 한 줄로 모아 보여준다
                     _grp = {}
                     for mm_ in auto["missing"]:
@@ -1375,8 +1380,8 @@ if VIEW == "input":
                                                "`원가(직접입력)` 칸을 채워 주세요.")
                                 else:
                                     _hit = sum(1 for k in s_up if k in _grp)
-                                    st.info("엑셀에서 원가 {}건을 읽었습니다 — 원가 못 찾은 {}건 중 "
-                                            "{}건이 채워집니다.".format(len(s_up), n_no, _hit))
+                                    st.info("엑셀에서 원가 {}건을 읽었습니다 — 원가 못 찾은 {}개 품목 중 "
+                                            "{}개가 채워집니다.".format(len(s_up), n_no_items, _hit))
                                     st.dataframe(pd.DataFrame(s_up_show), width="stretch",
                                                  hide_index=True, height=200,
                                                  column_config={"원가": st.column_config.NumberColumn(

@@ -114,32 +114,71 @@ def read_capture(img):
        label 은 글자인식으로 읽은 결제수단 이름(틀릴 수 있음)."""
     if not _setup():
         raise RuntimeError("글자인식 프로그램(tesseract)이 설치되어 있지 않습니다.")
-    found = []
+    cand, raw = [], []
     for r in _rows(_words(img)):
         ws = sorted(r["w"], key=lambda w: w[1])
-        nums, first_x = [], None
-        for t, x, _y, _h, _r in ws:
+        nums, first_x = [], None          # nums: [(값, 가운데x)]
+        for t, x, _y, _h, xr in ws:
             v = _num(t)
             if v is not None:
-                nums.append(v)
+                nums.append((v, (x + xr) / 2.0))
                 if first_x is None:
                     first_x = x
-        j = _pay_total(nums)
-        if j is None:
+        raw.append(" ".join(w[0] for w in ws))
+        if len(nums) < 4:                 # 제목 줄·취소건수 조각 등
             continue
         label = " ".join(t for t, x, *_ in ws if _num(t) is None and x < first_x)
-        found.append({"label": re.sub(r"[^0-9A-Za-z가-힣]", "", label),
-                      "total": float(nums[j]), "count": nums[0]})
+        j = _pay_total([v for v, _x in nums])
+        cand.append({"label": re.sub(r"[^0-9A-Za-z가-힣]", "", label), "nums": nums,
+                     "j": j, "count": nums[0][0]})
 
-    # 다른 줄들의 합과 같은 줄은 소계로 본다 (글자를 못 읽어도 알 수 있게)
+    # 계산이 맞은 줄들에서 결제합계 열의 위치를 알아낸다
+    xs = sorted(c["nums"][c["j"]][1] for c in cand if c["j"] is not None)
+    col_x = xs[len(xs) // 2] if xs else None
+    found = []
+    for c in cand:
+        if c["j"] is not None:
+            total, how = c["nums"][c["j"]][0], "계산 일치"
+        elif col_x is not None:
+            # 숫자 하나를 잘못 읽어 계산이 안 맞은 줄 → 같은 열 위치의 숫자를 쓴다
+            v, x = min(c["nums"], key=lambda n: abs(n[1] - col_x))
+            gap = abs(xs[-1] - xs[0]) if len(xs) > 1 else 0
+            if abs(x - col_x) > max(60.0, gap * 3):
+                continue
+            total, how = v, "확인 필요"
+        else:
+            continue
+        found.append({"label": c["label"], "total": float(total), "count": c["count"],
+                      "how": how})
+
+    # 소계 줄 찾기: 이름이 '소계'이거나, 다른 줄들의 합과 같은 줄
     subtotal = None
     for i, f in enumerate(found):
         rest = sum(g["total"] for k, g in enumerate(found) if k != i)
-        if len(found) > 2 and abs(f["total"] - rest) < 1 or "소계" in f["label"] or "합계" in f["label"]:
+        if "소계" in f["label"] or "합계" in f["label"] or (len(found) > 2 and abs(f["total"] - rest) < 1):
             subtotal = f["total"]
             found.pop(i)
             break
-    return {"rows": found, "subtotal": subtotal}
+    if subtotal is None and len(found) > 2:
+        # 소계 이름을 못 읽었고 합도 안 맞으면(한 줄을 잘못 읽음) 가장 큰 값이 소계인지 본다
+        big = max(range(len(found)), key=lambda k: found[k]["total"])
+        if found[big]["how"] == "계산 일치" and found[big]["count"] == sum(
+                g["count"] for k, g in enumerate(found) if k != big):
+            subtotal = found.pop(big)["total"]
+
+    # 확인 필요한 줄이 하나뿐이면 소계에서 나머지를 빼서 바로잡는다
+    bad = [f for f in found if f["how"] != "계산 일치"]
+    if subtotal is not None and len(bad) == 1:
+        fixed = subtotal - sum(f["total"] for f in found if f is not bad[0])
+        if fixed > 0 and abs(fixed - bad[0]["total"]) >= 1:
+            bad[0]["total"], bad[0]["how"] = float(fixed), "소계에서 계산 — 확인하세요"
+    elif subtotal is not None and not bad:
+        # 한 줄을 통째로 못 읽은 경우: 소계와의 차이를 그 줄 금액으로 둔다
+        diff = subtotal - sum(f["total"] for f in found)
+        if diff >= 1:
+            found.append({"label": "", "total": float(diff), "count": 0,
+                          "how": "못 읽은 줄 — 소계에서 계산, 확인하세요"})
+    return {"rows": found, "subtotal": subtotal, "raw": raw}
 
 
 ALIASES = {"카드": "신용카드", "신용": "신용카드", "무통장": "무통장입금", "입금": "무통장입금",

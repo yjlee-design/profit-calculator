@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent;
+    font-family: Pretendard, -apple-system, "Malgun Gothic", sans-serif; }
+  #box { box-sizing: border-box; height: 84px; margin: 2px; border: 2px dashed #A5B4FC;
+    border-radius: 14px; background: #EEF2FF; color: #3730A3; display: flex;
+    align-items: center; justify-content: center; gap: 10px; cursor: pointer;
+    font-size: 15px; outline: none; transition: background .15s, border-color .15s; }
+  #box:focus, #box.over { border-color: #6366F1; background: #E0E7FF; }
+  #box.done { border-style: solid; border-color: #10B981; background: #ECFDF5; color: #065F46; }
+  kbd { background: #fff; border: 1px solid #C7D2FE; border-bottom-width: 2px; border-radius: 6px;
+    padding: 1px 7px; font-size: 13px; font-family: inherit; }
+  small { color: #6366F1; }
+</style>
+</head>
+<body>
+<div id="box" tabindex="0">
+  <span>📋</span>
+  <span id="msg">캡쳐한 뒤 <kbd>Ctrl</kbd> + <kbd>V</kbd> &nbsp;<small>(이미지 파일을 끌어다 놓아도 됩니다)</small></span>
+</div>
+<script>
+// Streamlit 컴포넌트와 주고받는 최소한의 약속 (streamlit-component-lib 없이)
+function send(type, data) {
+  window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, data), "*");
+}
+send("streamlit:componentReady", {apiVersion: 1});
+send("streamlit:setFrameHeight", {height: 90});
+
+const box = document.getElementById("box");
+const msg = document.getElementById("msg");
+
+function sendFile(file) {
+  if (!file || !file.type || file.type.indexOf("image/") !== 0) return false;
+  const rd = new FileReader();
+  rd.onload = function () {
+    const b64 = String(rd.result).split(",")[1];
+    send("streamlit:setComponentValue", {value: {data: b64, ts: Date.now()}, dataType: "json"});
+    box.classList.add("done");
+    msg.textContent = "✅ 캡쳐를 받았습니다 — 아래에서 읽은 금액을 확인하세요. (다시 붙여넣으면 바뀝니다)";
+  };
+  rd.readAsDataURL(file);
+  return true;
+}
+
+function imageFrom(ev) {
+  const items = (ev.clipboardData || {}).items || [];
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].kind === "file" && items[i].type.indexOf("image/") === 0) return items[i].getAsFile();
+  }
+  return null;
+}
+
+function onPaste(ev) {
+  const f = imageFrom(ev);
+  if (!f) return;                    // 글자 붙여넣기 등은 원래대로 둔다
+  ev.preventDefault();
+  sendFile(f);
+}
+
+// 이 칸을 누르지 않고 화면 아무 데서나 Ctrl+V 해도 받도록 앱 화면에도 귀를 기울인다.
+document.addEventListener("paste", onPaste);
+try {
+  const pw = window.parent;
+  if (pw.__capPasteHandler) pw.document.removeEventListener("paste", pw.__capPasteHandler);
+  pw.__capPasteHandler = function (ev) {
+    if (!document.body.isConnected) return;     // 화면에서 사라진 칸이면 무시
+    onPaste(ev);
+  };
+  pw.document.addEventListener("paste", pw.__capPasteHandler);
+} catch (e) { /* 앱 화면에 접근할 수 없으면 이 칸을 눌러서 붙여넣는다 */ }
+
+box.addEventListener("click", function () { box.focus(); });
+box.addEventListener("dragover", function (e) { e.preventDefault(); box.classList.add("over"); });
+box.addEventListener("dragleave", function () { box.classList.remove("over"); });
+box.addEventListener("drop", function (e) {
+  e.preventDefault(); box.classList.remove("over");
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  sendFile(f);
+});
+</script>
+</body>
+</html>

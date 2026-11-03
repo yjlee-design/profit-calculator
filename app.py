@@ -23,11 +23,11 @@ import engine as E  # noqa: E402
 import auth  # noqa: E402
 import db  # noqa: E402
 import card_capture as CC  # noqa: E402
-try:
-    from streamlit_paste_button import paste_image_button  # noqa: E402
-except ImportError:                       # 없으면 이미지 파일 올리기만 쓴다
-    def paste_image_button(*_a, **_k):
-        return None
+import streamlit.components.v1 as _components  # noqa: E402
+
+# 캡쳐 후 Ctrl+V 로 바로 이미지를 받는 칸 (paste_image/index.html)
+_paste_image = _components.declare_component(
+    "paste_image", path=str(Path(__file__).parent / "paste_image"))
 
 MASTER = BASE / "이익률 마스터.xlsx"
 OVERRIDE = BASE / "원가보정.xlsx"
@@ -929,22 +929,13 @@ def card_capture_box(period, def_cards):
                     "[Tesseract 설치 파일](https://github.com/UB-Mannheim/tesseract/wiki) 로 "
                     "설치하면서 **Korean** 언어를 체크하세요.")
             return
-        st.caption("쇼핑몰 관리자 **매출내역 기간 통계** 표를 캡쳐(Win+Shift+S)한 뒤, "
-                   "아래 **캡쳐 붙여넣기** 를 누르세요. 결제수단 이름과 **결제합계** 열이 보이게 캡쳐하면 됩니다.")
-        p1, p2 = st.columns([1, 2])
-        with p1:
-            pasted = paste_image_button("📋 캡쳐 붙여넣기", key="cap_paste_%s" % period,
-                                        background_color="#6366F1",
-                                        hover_background_color="#4F46E5")
-        up_img = p2.file_uploader("또는 이미지 파일 올리기", type=["png", "jpg", "jpeg"],
-                                  key="cap_file_%s" % period, label_visibility="collapsed")
+        st.caption("쇼핑몰 관리자 **매출내역 기간 통계** 표를 캡쳐(Win+Shift+S)한 뒤 "
+                   "이 화면에서 바로 **Ctrl+V** 하세요. 결제수단 이름과 **결제합계** 열이 보이게 캡쳐하면 됩니다.")
+        pasted = _paste_image(key="cap_paste_%s" % period, default=None)
         img_bytes = None
-        if pasted is not None and pasted.image_data is not None:
-            _b = io.BytesIO()
-            pasted.image_data.save(_b, format="PNG")
-            img_bytes = _b.getvalue()
-        elif up_img is not None:
-            img_bytes = up_img.getvalue()
+        if pasted and pasted.get("data"):
+            import base64
+            img_bytes = base64.b64decode(pasted["data"])
         if not img_bytes:
             return
         _sig = hash(img_bytes)
@@ -961,20 +952,22 @@ def card_capture_box(period, def_cards):
         if not got["rows"]:
             st.warning("표에서 결제수단별 금액을 찾지 못했습니다. "
                        "**결제건수 ~ 결제합계** 열이 모두 보이게 다시 캡쳐해 주세요.")
+            with st.expander("글자인식이 읽은 원본 (잘못 읽을 때 확인용)"):
+                st.code("\n".join(got.get("raw") or []) or "(없음)", language=None)
             return
 
         # 읽은 이름 → 화면의 결제수단. 못 맞추면 순서대로 남은 결제수단을 넣고 표시해 둔다.
         used, rows = set(), []
         for r in got["rows"]:
             m = CC.match_method(r["label"], [x for x in methods if x not in used])
-            how = "이름"
+            how = r.get("how", "")
             if m is None:
                 m = next((x for x in methods if x not in used), None)
-                how = "순서로 추정 — 확인하세요"
+                how = (how + " · " if how else "") + "결제수단은 순서로 추정"
             if m:
                 used.add(m)
             rows.append({"결제수단": m, "읽은 이름": r["label"] or "(못 읽음)",
-                         "결제합계": r["total"], "맞춘 방법": how})
+                         "결제합계": r["total"], "확인": how})
         df = pd.DataFrame(rows)
         s_sum = float(df["결제합계"].sum())
         if got["subtotal"] is not None:
@@ -988,10 +981,12 @@ def card_capture_box(period, def_cards):
             st.info("읽은 금액 합계 {} 원 — 캡쳐와 같은지 확인하세요.".format(WON.format(s_sum)))
         ed = st.data_editor(
             df, width="stretch", hide_index=True, key="cap_ed_%s_%d" % (period, hash(img_bytes)),
-            disabled=["읽은 이름", "맞춘 방법"],
+            disabled=["읽은 이름", "확인"],
             column_config={
                 "결제수단": st.column_config.SelectboxColumn(options=methods, required=False),
                 "결제합계": st.column_config.NumberColumn(format="%d", min_value=0.0)})
+        with st.expander("글자인식이 읽은 원본 (잘못 읽을 때 확인용)"):
+            st.code("\n".join(got.get("raw") or []) or "(없음)", language=None)
         if st.button("이 금액으로 카드수수료 칸 채우기", type="primary",
                      key="cap_apply_%s" % period, width="stretch"):
             amt = {}

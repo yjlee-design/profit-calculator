@@ -537,6 +537,46 @@ def save_candidates(rows):
     return len(rows)
 
 
+UPLOAD_PREFIX = "업로드:"
+
+
+def save_uploaded_lookups(cand, cost, fee, origin, names, detail=""):
+    """웹 화면에서 올린 기준 파일을 DB 에 보관한다 (다음에 열어도·다른 사람도 같은 원가).
+       - 올린 파일의 후보 단가는 가장 우선(priority -1)으로 넣는다. 전에 올린 업로드분은 지운다.
+       - 동기화(동기화.bat)로 받은 2025년·구마스터 등 다른 파일의 값은 그대로 둔다.
+       - 다음에 동기화.bat 을 돌리면 그때의 마진율표 기준으로 통째로 다시 만들어진다."""
+    origin = origin or {}
+    with connect() as cn, cn.cursor() as cur:
+        cur.execute("delete from cost_candidate where source like %s", (UPLOAD_PREFIX + "%",))
+        if cand:
+            cur.executemany(
+                "insert into cost_candidate(code, cost, source, eff_date, priority, row_no) "
+                "values (%s,%s,%s,%s,-1,%s) on conflict do nothing",
+                [(c[0], c[1], c[2], c[3], c[5]) for c in cand])
+        if cost:
+            cur.executemany(
+                "insert into cost_master(code, cost, source) values (%s, %s, %s) "
+                "on conflict (code) do update set cost = excluded.cost, "
+                "source = excluded.source, updated_at = now()",
+                [(k, v, origin.get(k)) for k, v in cost.items()])
+        if fee:
+            cur.executemany(
+                "insert into fee_master(code, fee, source) values (%s, %s, %s) "
+                "on conflict (code) do update set fee = excluded.fee, "
+                "source = excluded.source, updated_at = now()",
+                [(k, v, origin.get(k)) for k, v in fee.items()])
+        rows = [("exact", k[0], k[1], code, 1) for k, code in (names.get("exact") or {}).items()]
+        rows += [("core", k[0], k[1], code, int(setn or 1))
+                 for k, (code, setn) in (names.get("core") or {}).items()]
+        if rows:
+            cur.executemany(
+                "insert into name_index(kind, item_name, opt_name, code, set_count) "
+                "values (%s, %s, %s, %s, %s) on conflict (kind, item_name, opt_name) "
+                "do update set code = excluded.code, set_count = excluded.set_count", rows)
+        cur.execute("insert into sync_log(kind, detail) values (%s, %s)", ("upload", detail))
+    return len(cand or [])
+
+
 def load_lookups_asof(period=None):
     """기준월까지 기재된 단가만으로 조회표를 만든다.
        규칙: 앞선 파일(priority 작은 값) 우선 → 같은 파일 안에서는 기재날짜 최신.

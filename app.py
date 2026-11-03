@@ -800,6 +800,29 @@ def load_sources(uploaded=None, box=None):
             except OSError as e:
                 err("{} — 읽기 실패 ({})".format(nm, e))
     try:
+        if USE_DB and blobs:
+            # 웹에서 올린 기준 파일은 DB 에 보관한다. (전에는 그 화면에서만 쓰이고
+            # 새로고침하면 사라져서, 올렸는데 저장이 안 된 것처럼 보였다)
+            with st.spinner("올린 기준 파일을 저장하는 중..."):
+                srcs = [(lb, io.BytesIO(b)) for lb, b in blobs]
+                c, f, _cf, rep, org, nx = E.load_lookups(srcs)
+                if not c and not f:
+                    raise ValueError("올린 파일에서 원가·요율을 찾지 못했습니다. 마진율표가 맞는지 확인하세요.")
+                cand = E.collect_candidates([(lb, io.BytesIO(b)) for lb, b in blobs])
+                # 마진율표 형식이 아닌 파일(구마스터 등)은 후보표가 안 나오므로
+                # 읽은 원가를 날짜 없는 후보로 넣어 월별 계산에도 쓰이게 한다.
+                _have = {x[0] for x in cand}
+                cand += [(k, v, org.get(k) or blobs[0][0], None, -1, 900000 + i)
+                         for i, (k, v) in enumerate(c.items()) if k not in _have]
+                db.save_uploaded_lookups(
+                    cand, c, f, org, nx,
+                    "웹 업로드 {} — 원가 {:,} / 요율 {:,}".format(
+                        ", ".join(lb.replace("업로드:", "") for lb, _b in blobs), len(c), len(f)))
+                db_fresh()
+            st.session_state["_src_saved_msg"] = (
+                "올린 기준 파일을 저장했습니다 — 원가 {:,}건 · 요율 {:,}건. "
+                "다음에 열어도, 다른 사람이 열어도 이 원가로 계산됩니다.".format(len(c), len(f)))
+            blobs = []          # 아래에서 DB(올린 파일 + 기존 파일 합본)로 다시 읽는다
         if USE_DB and not blobs:
             with st.spinner("기준 원가 불러오는 중..."):
                 d_cost, d_fee, d_origin = db.load_lookups_asof(period)
@@ -845,7 +868,7 @@ def render_source_panel():
     with st.expander("📁 기준 파일 — 원가·셀러수수료를 어디서 읽는지", expanded=False):
         c1, c2 = st.columns([3, 2])
         with c1:
-            up_ = st.file_uploader("기준 파일 직접 올리기 (선택 · 최우선 적용)",
+            up_ = st.file_uploader("기준 파일 직접 올리기 (선택 · 최우선 적용 · 🔄 업데이트 를 누르면 저장)",
                                    type=["xlsx", "xlsm"], accept_multiple_files=True,
                                    key="up_src")
             for nm, p, s in stats:
@@ -871,6 +894,8 @@ def render_source_panel():
                 db_fresh()
                 load_sources(up_)
                 st.rerun()
+            if st.session_state.get("_src_saved_msg"):
+                st.success(st.session_state.pop("_src_saved_msg"))
             if src_report:
                 for r in src_report:
                     st.caption("· {} — 원가 {:,} (신규 {:,}) · 요율 {:,}".format(

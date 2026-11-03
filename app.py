@@ -2330,11 +2330,21 @@ if VIEW == "result" and out:
         #      행사·특가처럼 원가가 따로 있는 경우를 잡아 낸다. 선택은 이번 달·그 채널에만 적용.
         _checks = load_cost_checks(out["period"])
 
-        def _save_checks(new):
+        def _save_checks(new, picked=None):
             try:
+                before = out["total"]["margin"]
                 where = save_cost_checks(out["period"], new)
-                st.session_state["_chk_flash"] = "원가 확인 결과를 {} 에 저장하고 다시 계산했습니다.".format(where)
                 ok, _e = run_calc()
+                picked = picked or {}
+                n_hand = sum(1 for v in picked.values() if v != E.CHECK_FILE)
+                n_file = len(picked) - n_hand
+                parts = (["수기 원가 {}건".format(n_hand)] if n_hand else []) +                         (["원가파일 원가 그대로 {}건".format(n_file)] if n_file else [])
+                after = (st.session_state.get("out") or {}).get("total", {}).get("margin", before)
+                msg = "{} 에 저장하고 다시 계산했습니다{}. 이익률 {:.2f}% → {:.2f}%".format(
+                    where, " — " + " · ".join(parts) if parts else "", before * 100, after * 100)
+                if not n_hand and picked:
+                    msg += "  (원가파일 원가를 그대로 쓰면 이익률은 바뀌지 않습니다)"
+                st.session_state["_chk_flash"] = msg
                 if ok:
                     st.rerun()
             except Exception as ex:
@@ -2346,6 +2356,7 @@ if VIEW == "result" and out:
             st.warning("**원가 확인이 필요한 {}건** — 원가파일 원가가 판매가의 {:.0f}% 이상이라 "
                        "이익이 거의 없거나 손해입니다. 행사·특가처럼 원가가 따로 있으면 "
                        "`원가(직접입력)` 에 넣고, 원가파일 값이 맞으면 `원가파일 사용` 을 체크하세요. "
+                       "**원가파일 원가를 그대로 쓰면 이익률은 바뀌지 않습니다.** "
                        "**이번 달 · 그 채널에만** 적용됩니다. (확인 전에는 원가파일 값으로 계산해 둡니다)"
                        .format(len(sus), (1 - E.SUSPECT_MIN) * 100))
             _sdf = pd.DataFrame([{
@@ -2384,33 +2395,65 @@ if VIEW == "result" and out:
             _c1, _c2 = st.columns([2, 1])
             if _c1.button("입력·체크한 대로 저장 · 다시 계산", type="primary", width="stretch",
                           disabled=not _picks, key="sus_save"):
-                _save_checks({**_checks, **_picks})
-            if _c2.button("전부 원가파일 원가 사용", width="stretch", key="sus_all_file",
-                          help="이상이 없으면 누르세요. 원가파일 원가 그대로 계산합니다."):
-                _save_checks({**_checks, **{E.check_key(x["ch"], x["code"]): E.CHECK_FILE
-                                            for x in sus}})
+                _save_checks({**_checks, **_picks}, _picks)
+            if _c2.button("나머지 전부 원가파일 원가 사용", width="stretch", key="sus_all_file",
+                          help="원가(직접입력)에 넣은 값은 그대로 쓰고, "
+                               "비어 있는 줄만 원가파일 원가로 계산합니다."):
+                _all = {E.check_key(x["ch"], x["code"]): E.CHECK_FILE for x in sus}
+                _all.update(_picks)              # 직접 넣은 원가는 살린다
+                _save_checks({**_checks, **_all}, _all)
         if _checks:
             _info = {}
             for _res in results:
                 for _g in _res["goods"]:
-                    _info.setdefault(E.check_key(_res["ch"]["name"], _g["code"]),
-                                     (_g["code_raw"], _g["name"]))
-            with st.expander("이번 달 원가 확인한 코드 {}건 — 되돌리기".format(len(_checks))):
-                _kdf = pd.DataFrame([{
-                    "채널": k.split("|", 1)[0],
-                    "상품코드": _info.get(k, (k.split("|", 1)[-1], ""))[0],
-                    "품목명[규격]": _info.get(k, ("", ""))[1],
-                    "결과": ("원가파일 원가 그대로" if v == E.CHECK_FILE
-                             else "수기 원가 {}원".format(WON.format(v))),
-                    "되돌리기": False, "_key": k} for k, v in _checks.items()])
-                _ked = st.data_editor(
-                    _kdf, hide_index=True, width="stretch",
-                    key="chk_done_{}_{}".format(out["period"], len(_checks)),
-                    column_order=["채널", "상품코드", "품목명[규격]", "결과", "되돌리기"],
-                    disabled=["채널", "상품코드", "품목명[규격]", "결과"])
-                _undo = {r["_key"] for _i, r in _ked.iterrows() if r["되돌리기"]}
-                if st.button("체크한 줄 되돌리기 · 다시 계산", disabled=not _undo, key="chk_undo"):
-                    _save_checks({k: v for k, v in _checks.items() if k not in _undo})
+                    _k = E.check_key(_res["ch"]["name"], _g["code"])
+                    _a = _info.setdefault(_k, {"raw": _g["code_raw"], "name": _g["name"],
+                                               "file": _g.get("cost_file", _g["cost"]),
+                                               "qty": 0.0, "amt": 0.0})
+                    _a["qty"] += _g["qty"]
+                    _a["amt"] += _g["amount"]
+            st.markdown("**이번 달 원가 확인한 코드 {}건**".format(len(_checks)))
+            st.caption("`원가(직접입력)` 을 넣거나 고치면 그 값으로, 비워 두면 원가파일 원가로 계산합니다. "
+                       "고친 뒤 [저장 · 다시 계산] 을 누르세요. `되돌리기` 를 체크하면 위 확인 목록으로 돌아갑니다.")
+            _kdf = pd.DataFrame([{
+                "채널": k.split("|", 1)[0],
+                "상품코드": _info.get(k, {}).get("raw", k.split("|", 1)[-1]),
+                "품목명[규격]": _info.get(k, {}).get("name", ""),
+                "평균 판매가": (_info[k]["amt"] / _info[k]["qty"]
+                            if k in _info and _info[k]["qty"] else None),
+                "원가파일 원가": _info.get(k, {}).get("file"),
+                "원가(직접입력)": None if v == E.CHECK_FILE else float(v),
+                "되돌리기": False, "_key": k} for k, v in _checks.items()])
+            for _c in ("평균 판매가", "원가파일 원가", "원가(직접입력)"):
+                _kdf[_c] = pd.to_numeric(_kdf[_c], errors="coerce")
+            _ked = st.data_editor(
+                _kdf, hide_index=True, width="stretch",
+                key="chk_done_{}_{}".format(out["period"], hash(tuple(sorted(
+                    (k, str(v)) for k, v in _checks.items()))) % 100000),
+                column_order=["채널", "상품코드", "품목명[규격]", "평균 판매가", "원가파일 원가",
+                              "원가(직접입력)", "되돌리기"],
+                disabled=["채널", "상품코드", "품목명[규격]", "평균 판매가", "원가파일 원가"],
+                column_config={
+                    "평균 판매가": st.column_config.NumberColumn(format="%d"),
+                    "원가파일 원가": st.column_config.NumberColumn(format="%d"),
+                    "원가(직접입력)": st.column_config.NumberColumn(
+                        format="%d", min_value=0.0, step=100.0, default=None,
+                        help="이번 달 이 채널에서 쓸 1개당 원가. 비우면 원가파일 원가"),
+                })
+            _new, _undo = {}, set()
+            for _i, r in _ked.iterrows():
+                if r["되돌리기"]:
+                    _undo.add(r["_key"])
+                    continue
+                _v = r["원가(직접입력)"]
+                _new[r["_key"]] = E.CHECK_FILE if _v is None or pd.isna(_v) else float(_v)
+            _changed = {k: v for k, v in _new.items() if _checks.get(k) != v}
+            _b1, _b2 = st.columns([2, 1])
+            if _b1.button("저장 · 다시 계산", type="primary", width="stretch",
+                          disabled=not _changed, key="chk_save"):
+                _save_checks({**_checks, **_changed}, _changed)
+            if _b2.button("체크한 줄 되돌리기", width="stretch", disabled=not _undo, key="chk_undo"):
+                _save_checks({k: v for k, v in _checks.items() if k not in _undo})
         # 기준 파일에 없어서 직접 넣은(화면·엑셀) 원가로 계산된 품목 — 업로드 뒤에도 보이고 고칠 수 있게
         _ent, _ent_ch = {}, {}
         for _res in results:

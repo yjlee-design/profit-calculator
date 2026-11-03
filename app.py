@@ -1147,8 +1147,8 @@ def run_calc(snap=None):
     save_history(snap["period"], results, total)     # 월별 추이 그래프용 이력
     save_month_files(snap["period"], snap["files"])   # 다음에 열어도 결과가 보이도록
     save_report(snap["period"], buf.getvalue(),       # 결과 엑셀도 달마다 보관
-                "매출 {:,.0f} / 이익 {:,.0f} / {:.2f}%".format(
-                    total["gross"], total["profit"], total["margin"] * 100))
+                "상품매출 {:,.0f} / 이익 {:,.0f} / {:.2f}%".format(
+                    total["sales"], total["profit"], total["margin"] * 100))
     return True, errs
 
 
@@ -2034,7 +2034,7 @@ if VIEW == "result" and out:
     m[2].metric("배송매출", WON.format(total["delivery"]) + " 원",
                 delta="이익 계산 제외", delta_color="off")
     m[3].metric("총이익액", WON.format(total["profit"]) + " 원")
-    m[4].metric("이익률", "{:.2f} %".format(profit_rate(total["profit"], total["gross"]) * 100))
+    m[4].metric("이익률 (배송 제외)", "{:.2f} %".format(profit_rate(total["profit"], total["sales"]) * 100))
     miss = E.missing_rows(results)
     sus = E.suspect_rows(results)
     m[5].metric("원가 미매칭", "{}건".format(len(miss) + len(sus)),

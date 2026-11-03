@@ -1125,7 +1125,8 @@ def apply_totals(results, card_total, sample):
         total["profit"] += res["profit"]
         total["delivery"] += res["delivery_sales"]
     total["gross"] = total["sales"] + total["delivery"]
-    total["margin"] = total["profit"] / total["gross"] if total["gross"] else 0.0
+    # 이익률은 상품매출 기준 (배송매출은 매출=원가라 분모에서도 뺀다)
+    total["margin"] = total["profit"] / total["sales"] if total["sales"] else 0.0
     return total
 
 
@@ -1201,13 +1202,14 @@ def _summary(wb, results, total, cards, card_total, sample_items, sample, period
     put(ws, r, 9, total["delivery"], bold=True, fill=HDR, fmt=MONEY)
 
     r += 2
-    for lab, val, fmt in [("총매출(배송 포함)", total["gross"], MONEY),
+    for lab, val, fmt in [("상품매출", total["sales"], MONEY),
                           ("총이익액", total["profit"], MONEY),
-                          ("이익률(총매출 기준)", total["margin"], PCT)]:
+                          ("이익률(배송 제외)", total["margin"], PCT),
+                          ("배송매출(참고)", total["delivery"], MONEY)]:
         put(ws, r, 1, lab, bold=True, box=False)
         put(ws, r, 2, val, fmt=fmt, box=False)
         r += 1
-    ws.cell(r, 1, "* 배송 이익 제외 (배송매출 = 배송원가로 처리)").font = Font(size=9, color="808080")
+    ws.cell(r, 1, "* 배송 제외 — 배송매출은 매출=원가로 처리하고 이익률 분모에서도 뺌").font = Font(size=9, color="808080")
 
     r += 2
     put(ws, r, 1, "카드수수료 내역", bold=True, box=False)

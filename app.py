@@ -22,6 +22,12 @@ sys.path.insert(0, str(BASE))
 import engine as E  # noqa: E402
 import auth  # noqa: E402
 import db  # noqa: E402
+import card_capture as CC  # noqa: E402
+try:
+    from streamlit_paste_button import paste_image_button  # noqa: E402
+except ImportError:                       # 없으면 이미지 파일 올리기만 쓴다
+    def paste_image_button(*_a, **_k):
+        return None
 
 MASTER = BASE / "이익률 마스터.xlsx"
 OVERRIDE = BASE / "원가보정.xlsx"
@@ -903,6 +909,104 @@ else:
 auth.logout_button()
 
 
+# ---------------------------------------------------------------- 매출통계 캡쳐 → 카드 금액
+@st.cache_data(show_spinner="캡쳐에서 숫자 읽는 중...", max_entries=20)
+def _read_capture_cached(png_bytes):
+    from PIL import Image
+    return CC.read_capture(Image.open(io.BytesIO(png_bytes)))
+
+
+def card_capture_box(period, def_cards):
+    """'매출내역 기간 통계' 화면을 캡쳐해 붙여넣으면 결제수단별 결제합계를 아래 칸에 채운다."""
+    methods = [m for m, _a, _r in def_cards]
+    if st.session_state.get("_cap_flash"):
+        st.success(st.session_state.pop("_cap_flash"))
+    with st.expander("📷 매출통계 화면 캡쳐로 자동 입력 (결제합계 기준)",
+                     expanded=bool(st.session_state.get("cap_open_" + period))):
+        if not CC.available():
+            st.info("이 서버에는 글자인식 프로그램(tesseract)이 없어 캡쳐를 읽을 수 없습니다. "
+                    "웹 앱에서는 자동으로 설치되고, 이 PC 에서 쓰려면 "
+                    "[Tesseract 설치 파일](https://github.com/UB-Mannheim/tesseract/wiki) 로 "
+                    "설치하면서 **Korean** 언어를 체크하세요.")
+            return
+        st.caption("쇼핑몰 관리자 **매출내역 기간 통계** 표를 캡쳐(Win+Shift+S)한 뒤, "
+                   "아래 **캡쳐 붙여넣기** 를 누르세요. 결제수단 이름과 **결제합계** 열이 보이게 캡쳐하면 됩니다.")
+        p1, p2 = st.columns([1, 2])
+        with p1:
+            pasted = paste_image_button("📋 캡쳐 붙여넣기", key="cap_paste_%s" % period,
+                                        background_color="#6366F1",
+                                        hover_background_color="#4F46E5")
+        up_img = p2.file_uploader("또는 이미지 파일 올리기", type=["png", "jpg", "jpeg"],
+                                  key="cap_file_%s" % period, label_visibility="collapsed")
+        img_bytes = None
+        if pasted is not None and pasted.image_data is not None:
+            _b = io.BytesIO()
+            pasted.image_data.save(_b, format="PNG")
+            img_bytes = _b.getvalue()
+        elif up_img is not None:
+            img_bytes = up_img.getvalue()
+        if not img_bytes:
+            return
+        _sig = hash(img_bytes)
+        if st.session_state.get("cap_applied_" + period) == _sig:
+            st.caption("이 캡쳐의 금액은 이미 아래 칸에 채웠습니다. 다른 달이면 새로 캡쳐해 붙여넣으세요.")
+            return
+        st.session_state["cap_open_" + period] = True
+        try:
+            got = _read_capture_cached(img_bytes)
+        except Exception as e:
+            st.error("캡쳐를 읽지 못했습니다 — {}".format(e))
+            return
+        st.image(img_bytes, width=520)
+        if not got["rows"]:
+            st.warning("표에서 결제수단별 금액을 찾지 못했습니다. "
+                       "**결제건수 ~ 결제합계** 열이 모두 보이게 다시 캡쳐해 주세요.")
+            return
+
+        # 읽은 이름 → 화면의 결제수단. 못 맞추면 순서대로 남은 결제수단을 넣고 표시해 둔다.
+        used, rows = set(), []
+        for r in got["rows"]:
+            m = CC.match_method(r["label"], [x for x in methods if x not in used])
+            how = "이름"
+            if m is None:
+                m = next((x for x in methods if x not in used), None)
+                how = "순서로 추정 — 확인하세요"
+            if m:
+                used.add(m)
+            rows.append({"결제수단": m, "읽은 이름": r["label"] or "(못 읽음)",
+                         "결제합계": r["total"], "맞춘 방법": how})
+        df = pd.DataFrame(rows)
+        s_sum = float(df["결제합계"].sum())
+        if got["subtotal"] is not None:
+            if abs(got["subtotal"] - s_sum) < 1:
+                st.success("읽은 금액 합계 {} 원 = 캡쳐의 소계와 일치합니다.".format(WON.format(s_sum)))
+            else:
+                st.warning("읽은 금액 합계 {} 원이 캡쳐의 소계 {} 원과 다릅니다. "
+                           "아래 숫자를 캡쳐와 비교해 고쳐 주세요."
+                           .format(WON.format(s_sum), WON.format(got["subtotal"])))
+        else:
+            st.info("읽은 금액 합계 {} 원 — 캡쳐와 같은지 확인하세요.".format(WON.format(s_sum)))
+        ed = st.data_editor(
+            df, width="stretch", hide_index=True, key="cap_ed_%s_%d" % (period, hash(img_bytes)),
+            disabled=["읽은 이름", "맞춘 방법"],
+            column_config={
+                "결제수단": st.column_config.SelectboxColumn(options=methods, required=False),
+                "결제합계": st.column_config.NumberColumn(format="%d", min_value=0.0)})
+        if st.button("이 금액으로 카드수수료 칸 채우기", type="primary",
+                     key="cap_apply_%s" % period, width="stretch"):
+            amt = {}
+            for _i, r in ed.iterrows():
+                if r["결제수단"] and not pd.isna(r["결제합계"]):
+                    amt[r["결제수단"]] = amt.get(r["결제수단"], 0.0) + float(r["결제합계"])
+            for i, m in enumerate(methods):
+                # 캡쳐에 없는 결제수단은 0 으로 (지난달 값이 남지 않도록)
+                st.session_state["card_amt_%s_%d" % (period, i)] = float(amt.get(m, 0.0))
+            st.session_state["cap_open_" + period] = False
+            st.session_state["cap_applied_" + period] = _sig
+            st.session_state["_cap_flash"] = "캡쳐의 결제합계로 {}개 결제수단을 채웠습니다.".format(len(amt))
+            st.rerun()
+
+
 # ---------------------------------------------------------------- 본문
 def run_calc(snap=None):
     """저장된 입력값으로 계산. 화면에서 직접 넣은 원가(manual_cost)도 함께 적용.
@@ -1149,6 +1253,9 @@ if VIEW == "input":
                     st.rerun()
             except Exception as e:
                 st.error("스룩페이 파일을 읽지 못했습니다 — {}".format(e))
+
+        # ---- '매출내역 기간 통계' 화면 캡쳐로 자동 입력 (결제합계 기준)
+        card_capture_box(period, def_cards)
 
         sk = st.session_state.get("srook_" + period)
         if sk:

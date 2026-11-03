@@ -1901,18 +1901,16 @@ def analyze_channel(res, prev=None):
                  ("샘플비용", smp_r, prev["sample"] / pb)]
         prev_rows = pd.DataFrame(
             [{"항목": "상품매출", "이번 달": WON.format(sales), "지난달": WON.format(prev["sales"])},
-             {"항목": "이익률", "이번 달": _pct(rate), "지난달": _pct(p_rate)}]
-            + [{"항목": n + " (매출 100원당)", "이번 달": "{:.1f}원".format(a * 100),
-                "지난달": "{:.1f}원".format(b * 100)} for n, a, b in items if a or b])
+             {"항목": "이익률", "이번 달": _pct(rate), "지난달": _pct(p_rate)}])
         if not neg:
             for n, a, b in items:
                 d = a - b                 # 비용 비중이 늘면 이익률은 그만큼 줄어든다
                 if d >= 0.005:
-                    down.append("**{} 비중 증가** — 매출 100원당 {:.1f}원 → {:.1f}원으로 늘어 "
-                                "이익률이 {} 낮아졌습니다".format(n, b * 100, a * 100, _pp(d)))
+                    down.append("**{} 비중 증가** — 매출 대비 {} → {}로 늘어 "
+                                "이익률이 {} 낮아졌습니다".format(n, _pct(b), _pct(a), _pp(d)))
                 elif d <= -0.005:
-                    up.append("**{} 비중 감소** — 매출 100원당 {:.1f}원 → {:.1f}원으로 줄어 "
-                              "이익률이 {} 높아졌습니다".format(n, b * 100, a * 100, _pp(d)))
+                    up.append("**{} 비중 감소** — 매출 대비 {} → {}로 줄어 "
+                              "이익률이 {} 높아졌습니다".format(n, _pct(b), _pct(a), _pp(d)))
 
     # ── 상품군
     if not gdf.empty and not neg:

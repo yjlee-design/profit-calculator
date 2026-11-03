@@ -654,6 +654,14 @@ st.sidebar.title("📊 이익률 계산기")
 
 defaults_key = CONFIG.stat().st_mtime if CONFIG.exists() else 0
 def_sources, def_years, def_channels, def_cards_all, def_samples_all, def_period = read_config_defaults(defaults_key)
+if USE_DB:
+    # 위 값은 앱이 처음 켜질 때 한 번 읽어 둔 것이라(클라우드는 설정 파일이 없어 다시 읽지 않음)
+    # 다른 달에 저장한 샘플비용·카드수수료가 안 보였다. 월별 값은 DB 에서 새로 읽는다.
+    try:
+        def_cards_all = db_read("load_cards") or def_cards_all
+        def_samples_all = db_read("load_samples") or def_samples_all
+    except Exception:
+        pass
 
 def split_period(p, fallback=None):
     """'2026-07' → (2026, 7). 이상하면 fallback(또는 오늘)"""
@@ -1512,9 +1520,11 @@ if VIEW == "input":
             """이 달의 카드수수료·샘플비용·채널설정을 보관한다."""
             if USE_DB:
                 db.save_cards(period, cards_in)
-                db.save_samples(smp_year)
+                # 이번 달만 저장한다 (12개월을 통째로 쓰면 다른 달 값을 덮어쓸 수 있다)
+                db.save_samples({period: smp_year.get(period, 0.0)})
                 db.save_channels(channels)
                 db.save_setting("period", period)
+                db_fresh()
                 return "Supabase"
             save_config(period, def_sources, def_years, ch_df, cards_in, smp_year,
                         def_cards_all, def_samples_all)
@@ -1530,9 +1540,10 @@ if VIEW == "input":
             try:
                 if USE_DB:
                     db.save_cards(period, cards_in)
-                    db.save_samples(smp_year)
+                    db.save_samples({period: smp_year.get(period, 0.0)})
                     db.save_channels(channels)
                     db.save_setting("period", period)
+                    db_fresh()
                     st.success("Supabase 에 저장했습니다.")
                 else:
                     save_config(period, def_sources, def_years, ch_df, cards_in, smp_year,

@@ -9,9 +9,24 @@
 """
 
 import io
+import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
+
+# 웹 서버(Streamlit Cloud)는 시간대가 UTC 라 시각이 9시간 늦게 나왔다 → 한국 시간으로 맞춘다.
+# (Windows 에는 tzset 이 없지만 PC 자체가 한국 시간이라 그대로 둔다)
+os.environ["TZ"] = "Asia/Seoul"
+if hasattr(time, "tzset"):
+    time.tzset()
+
+
+def kst(dt):
+    """DB 에서 온 시각(UTC) → 한국 시간으로 표시용"""
+    if dt is not None and getattr(dt, "tzinfo", None) is not None:
+        return dt.astimezone()
+    return dt
 
 import pandas as pd
 import streamlit as st
@@ -894,7 +909,7 @@ if USE_DB:
     st.sidebar.success("☁️ Supabase 연결됨")
     if _ls:
         st.sidebar.caption("마지막 동기화 {} · {}".format(
-            _ls["synced_at"].strftime("%Y-%m-%d %H:%M"), _ls["detail"]))
+            kst(_ls["synced_at"]).strftime("%Y-%m-%d %H:%M"), _ls["detail"]))
     else:
         st.sidebar.caption("아직 동기화 기록이 없습니다. 사무실 PC 에서 `동기화.bat` 을 실행하세요.")
 else:
@@ -2072,7 +2087,7 @@ if VIEW == "result" and out:
                 _c[1].markdown("<span style='color:#64748B;font-size:.82rem'>{}</span>"
                                .format(_sm or "-"), unsafe_allow_html=True)
                 _c[2].markdown("<span style='color:#94A3B8;font-size:.78rem'>{}</span>"
-                               .format(_at.strftime("%Y-%m-%d %H:%M") if _at else ""),
+                               .format(kst(_at).strftime("%Y-%m-%d %H:%M") if _at else ""),
                                unsafe_allow_html=True)
                 _got = load_report(_p)
                 if _got:

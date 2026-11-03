@@ -1279,6 +1279,8 @@ if VIEW == "input":
             _m3.metric("원가 매칭", "{} / {} 건".format(n_ok, n_ok + n_no),
                        help="상품명+옵션명으로 기준 파일에서 찾은 건수")
             smp_manual = load_sample_manual()
+            if st.session_state.get("_smp_flash"):
+                st.success(st.session_state.pop("_smp_flash"))
             if n_no:
                 st.warning("**{}건**은 기준 파일에서 원가를 찾지 못했습니다. "
                            "아래 `원가(직접입력)` 칸에 1개당 원가를 넣고 "
@@ -1318,6 +1320,79 @@ if VIEW == "input":
                             st.rerun()
                         except Exception as e:
                             st.error("저장 실패: {}".format(e))
+
+                    # ── 엑셀로 한꺼번에: 내려받아 원가를 채운 뒤 다시 올리기 ──
+                    st.write("")
+                    st.markdown("**엑셀로 한꺼번에 넣기** — 목록을 내려받아 "
+                                "`원가(직접입력)` 칸을 채운 뒤 그대로 올리세요.")
+                    sx1, sx2 = st.columns([1, 2])
+                    _sxbuf = io.BytesIO()
+                    with pd.ExcelWriter(_sxbuf, engine="openpyxl") as _sxw:
+                        _sdf[["상품명", "옵션명", "수량", "원가(직접입력)"]].to_excel(
+                            _sxw, index=False, sheet_name="샘플 원가 못찾음")
+                        _sws = _sxw.sheets["샘플 원가 못찾음"]
+                        for _col, _w in zip("ABCD", [40, 30, 8, 16]):
+                            _sws.column_dimensions[_col].width = _w
+                    sx1.download_button(
+                        "원가 못 찾은 샘플 엑셀 내려받기", data=_sxbuf.getvalue(),
+                        file_name="{} 샘플 원가입력.xlsx".format(period),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="stretch", key="smp_miss_dl_%s" % period)
+                    up_smiss = sx2.file_uploader(
+                        "원가를 채운 엑셀 올리기", type=["xlsx", "xlsm", "csv"],
+                        key="smp_miss_up_%s" % period, label_visibility="collapsed")
+                    if up_smiss is not None:
+                        try:
+                            if up_smiss.name.lower().endswith(".csv"):
+                                _sudf = pd.read_csv(io.BytesIO(up_smiss.getvalue()), dtype=str)
+                            else:
+                                _sudf = pd.read_excel(io.BytesIO(up_smiss.getvalue()), dtype=str)
+                            _sudf.columns = [str(c).strip() for c in _sudf.columns]
+                            _sccol = "원가(직접입력)" if "원가(직접입력)" in _sudf.columns else next(
+                                (c for c in _sudf.columns if "원가" in c), None)
+                            if "상품명" not in _sudf.columns or _sccol is None:
+                                st.error("`상품명` 과 `원가(직접입력)` 열이 있어야 합니다. "
+                                         "내려받은 파일을 그대로 쓰세요.")
+                            else:
+                                s_up, s_up_show = {}, []
+                                for _i, r in _sudf.iterrows():
+                                    _nm = r["상품명"]
+                                    if _nm is None or pd.isna(_nm) or not str(_nm).strip():
+                                        continue
+                                    _op = r.get("옵션명", "")
+                                    _op = "" if _op is None or pd.isna(_op) else str(_op)
+                                    _v = r[_sccol]
+                                    if isinstance(_v, str):
+                                        _v = _v.replace(",", "").replace("원", "").strip() or None
+                                    _v = pd.to_numeric(_v, errors="coerce")
+                                    if _v is None or pd.isna(_v) or _v < 0:
+                                        continue           # 빈칸은 '아직 안 넣음'
+                                    s_up[E.sample_key(str(_nm), _op)] = float(_v)
+                                    s_up_show.append({"상품명": str(_nm), "옵션명": _op,
+                                                      "원가": float(_v)})
+                                if not s_up:
+                                    st.warning("원가가 채워진 줄이 없습니다. "
+                                               "`원가(직접입력)` 칸을 채워 주세요.")
+                                else:
+                                    _hit = sum(1 for k in s_up if k in _grp)
+                                    st.info("엑셀에서 원가 {}건을 읽었습니다 — 원가 못 찾은 {}건 중 "
+                                            "{}건이 채워집니다.".format(len(s_up), n_no, _hit))
+                                    st.dataframe(pd.DataFrame(s_up_show), width="stretch",
+                                                 hide_index=True, height=200,
+                                                 column_config={"원가": st.column_config.NumberColumn(
+                                                     format="%d")})
+                                    if st.button("엑셀 원가 기억하기", type="primary",
+                                                 width="stretch", key="smp_miss_up_apply_%s" % period):
+                                        try:
+                                            where = save_sample_manual({**smp_manual, **s_up})
+                                            st.session_state["_smp_flash"] = (
+                                                "엑셀에서 샘플 원가 {}건을 {} 에 기억했습니다."
+                                                .format(len(s_up), where))
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error("저장 실패: {}".format(e))
+                        except Exception as _ex:
+                            st.error("엑셀을 읽지 못했습니다: {}".format(_ex))
             if smp_manual:
                 _used = {i["key"] for i in auto["items"] if i["how"] == "직접입력(기억)"}
                 _matched = {i["key"] for i in auto["items"] if i["how"] != "직접입력(기억)"}
